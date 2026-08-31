@@ -27,6 +27,7 @@ class _ChatPageState extends State<ChatPage> {
 
   bool showEmojiPicker = false;
   bool sendingImage = false;
+  bool isTyping = false;
 
   String get chatId {
     final currentUser = FirebaseAuth.instance.currentUser;
@@ -38,6 +39,25 @@ class _ChatPageState extends State<ChatPage> {
     final ids = [currentUser.uid, widget.userId]..sort();
 
     return ids.join('_');
+  }
+
+  Future<void> updateTypingStatus(bool typing) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null || chatId.isEmpty) {
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('chats')
+          .doc(chatId)
+          .set({
+        'typing_${currentUser.uid}': typing,
+      }, SetOptions(merge: true));
+    } catch (_) {
+      // Typing status should never interrupt messaging.
+    }
   }
 
   Future<bool> canSendMessage() async {
@@ -133,6 +153,9 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> sendMessage() async {
     final text = messageController.text.trim();
+
+    await updateTypingStatus(false);
+    isTyping = false;
 
     if (text.isEmpty) {
       return;
@@ -412,10 +435,20 @@ class _ChatPageState extends State<ChatPage> {
     super.initState();
     updateOnlineStatus(true);
     ensureChatExists();
+
+    messageController.addListener(() {
+      final typing = messageController.text.trim().isNotEmpty;
+
+      if (typing != isTyping) {
+        isTyping = typing;
+        updateTypingStatus(typing);
+      }
+    });
   }
 
   @override
   void dispose() {
+    updateTypingStatus(false);
     updateOnlineStatus(false);
     messageController.dispose();
     super.dispose();
@@ -550,6 +583,48 @@ class _ChatPageState extends State<ChatPage> {
                 );
               },
             ),
+          ),
+
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: FirebaseFirestore.instance
+                .collection('chats')
+                .doc(chatId)
+                .snapshots(),
+            builder: (context, snapshot) {
+              final data = snapshot.data?.data();
+
+              if (data == null) {
+                return const SizedBox.shrink();
+              }
+
+              final currentUid =
+                  FirebaseAuth.instance.currentUser?.uid ?? '';
+
+              final otherTyping =
+                  data['typing_${widget.userId}'] == true;
+
+              if (!otherTyping || currentUid == widget.userId) {
+                return const SizedBox.shrink();
+              }
+
+              return Padding(
+                padding: const EdgeInsets.only(
+                  left: 18,
+                  bottom: 5,
+                ),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '${widget.userName} is typing...',
+                    style: const TextStyle(
+                      color: Colors.grey,
+                      fontSize: 12,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
 
           if (sendingImage)
