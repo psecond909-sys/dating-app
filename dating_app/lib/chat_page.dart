@@ -185,6 +185,7 @@ class _ChatPageState extends State<ChatPage> {
         'receiverId': widget.userId,
         'text': text,
         'type': 'text',
+        'read': false,
         'createdAt': FieldValue.serverTimestamp(),
       });
 
@@ -253,6 +254,7 @@ class _ChatPageState extends State<ChatPage> {
         'text': '',
         'imageUrl': imageUrl,
         'type': 'image',
+        'read': false,
         'createdAt': FieldValue.serverTimestamp(),
       });
 
@@ -410,6 +412,41 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  Future<void> markMessagesAsRead() async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null || chatId.isEmpty) {
+      return;
+    }
+
+    try {
+      final messages = await FirebaseFirestore.instance
+          .collection('chats')
+          .doc(chatId)
+          .collection('messages')
+          .where('receiverId', isEqualTo: currentUser.uid)
+          .where('read', isEqualTo: false)
+          .get();
+
+      if (messages.docs.isEmpty) {
+        return;
+      }
+
+      final batch = FirebaseFirestore.instance.batch();
+
+      for (final message in messages.docs) {
+        batch.update(message.reference, {
+          'read': true,
+          'readAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+    } catch (_) {
+      // Read receipts should not interrupt the chat.
+    }
+  }
+
   Future<void> ensureChatExists() async {
     final currentUser = FirebaseAuth.instance.currentUser;
 
@@ -435,6 +472,7 @@ class _ChatPageState extends State<ChatPage> {
     super.initState();
     updateOnlineStatus(true);
     ensureChatExists();
+    markMessagesAsRead();
 
     messageController.addListener(() {
       final typing = messageController.text.trim().isNotEmpty;
@@ -515,6 +553,10 @@ class _ChatPageState extends State<ChatPage> {
                   .orderBy('createdAt')
                   .snapshots(),
               builder: (context, snapshot) {
+                if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
+                  Future.microtask(markMessagesAsRead);
+                }
+
                 if (snapshot.connectionState ==
                     ConnectionState.waiting) {
                   return const Center(
