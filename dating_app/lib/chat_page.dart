@@ -367,6 +367,26 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
+  Future<void> updateOnlineStatus(bool online) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null) {
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentUser.uid)
+          .set({
+        'isOnline': online,
+        'lastSeen': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {
+      // Do not interrupt chat if status update fails.
+    }
+  }
+
   Future<void> ensureChatExists() async {
     final currentUser = FirebaseAuth.instance.currentUser;
 
@@ -390,11 +410,13 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    updateOnlineStatus(true);
     ensureChatExists();
   }
 
   @override
   void dispose() {
+    updateOnlineStatus(false);
     messageController.dispose();
     super.dispose();
   }
