@@ -4,6 +4,11 @@ import 'package:image_picker/image_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:geolocator/geolocator.dart';
+import 'terms_page.dart';
+import 'privacy_policy_page.dart';
+import 'premium_page.dart';
 
 import 'matches_page.dart';
 import 'likes_received_page.dart';
@@ -66,6 +71,62 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
+
+class AdBanner extends StatefulWidget {
+  const AdBanner({super.key});
+
+  @override
+  State<AdBanner> createState() => _AdBannerState();
+}
+
+class _AdBannerState extends State<AdBanner> {
+  BannerAd? _bannerAd;
+  bool _isLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _bannerAd = BannerAd(
+      adUnitId: 'ca-app-pub-3940256099942544/6300978111',
+      request: const AdRequest(),
+      size: AdSize.banner,
+      listener: BannerAdListener(
+        onAdLoaded: (ad) {
+          if (mounted) {
+            setState(() {
+              _isLoaded = true;
+            });
+          }
+        },
+        onAdFailedToLoad: (ad, error) {
+          ad.dispose();
+          debugPrint('Banner ad failed: $error');
+        },
+      ),
+    )..load();
+  }
+
+  @override
+  void dispose() {
+    _bannerAd?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isLoaded || _bannerAd == null) {
+      return const SizedBox.shrink();
+    }
+
+    return SizedBox(
+      width: _bannerAd!.size.width.toDouble(),
+      height: _bannerAd!.size.height.toDouble(),
+      child: AdWidget(ad: _bannerAd!),
+    );
+  }
+}
+
 class DiscoverPage extends StatefulWidget {
   const DiscoverPage({super.key});
 
@@ -75,6 +136,130 @@ class DiscoverPage extends StatefulWidget {
 
 class _DiscoverPageState extends State<DiscoverPage> {
   final Set<String> passedUserIds = {};
+  Set<String> blockedUserIds = {};
+
+  Position? currentPosition;
+  bool locationLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _setOnline();
+    _loadBlockedUsers();
+    _loadCurrentLocation();
+  }
+
+  Future<void> _loadCurrentLocation() async {
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        if (mounted) {
+          setState(() {
+            locationLoading = false;
+          });
+        }
+        return;
+      }
+
+      var permission = await Geolocator.checkPermission();
+
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          setState(() {
+            locationLoading = false;
+          });
+        }
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+        ),
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        currentPosition = position;
+        locationLoading = false;
+      });
+    } catch (e) {
+      debugPrint('Current location error: $e');
+
+      if (mounted) {
+        setState(() {
+          locationLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadBlockedUsers() async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) return;
+
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('blockedUsers')
+          .get();
+
+      if (!mounted) return;
+
+      setState(() {
+        blockedUserIds = snapshot.docs.map((doc) => doc.id).toSet();
+      });
+    } catch (e) {
+      debugPrint('Unable to load blocked users: $e');
+    }
+  }
+
+  Future<void> _setOnline() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .set({
+        'isOnline': true,
+        'lastSeen': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Online status error: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _setOffline();
+    super.dispose();
+  }
+
+  Future<void> _setOffline() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .set({
+        'isOnline': false,
+        'lastSeen': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Offline status error: $e');
+    }
+  }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> get usersStream {
     return FirebaseFirestore.instance
@@ -148,8 +333,47 @@ class _DiscoverPageState extends State<DiscoverPage> {
 
                   final profiles = documents.where((doc) {
                     return doc.id != currentUser?.uid &&
-                        !passedUserIds.contains(doc.id);
+                        !passedUserIds.contains(doc.id) &&
+                        !blockedUserIds.contains(doc.id);
                   }).toList();
+
+                  profiles.sort((a, b) {
+                    final aData = a.data();
+                    final bData = b.data();
+
+                    final aLat = (aData['latitude'] as num?)?.toDouble();
+                    final aLng = (aData['longitude'] as num?)?.toDouble();
+                    final bLat = (bData['latitude'] as num?)?.toDouble();
+                    final bLng = (bData['longitude'] as num?)?.toDouble();
+
+                    if (currentPosition == null) {
+                      return 0;
+                    }
+
+                    if (aLat == null || aLng == null) {
+                      return 1;
+                    }
+
+                    if (bLat == null || bLng == null) {
+                      return -1;
+                    }
+
+                    final aDistance = Geolocator.distanceBetween(
+                      currentPosition!.latitude,
+                      currentPosition!.longitude,
+                      aLat,
+                      aLng,
+                    );
+
+                    final bDistance = Geolocator.distanceBetween(
+                      currentPosition!.latitude,
+                      currentPosition!.longitude,
+                      bLat,
+                      bLng,
+                    );
+
+                    return aDistance.compareTo(bDistance);
+                  });
 
                   if (profiles.isEmpty) {
                     return const EmptyProfiles();
@@ -173,6 +397,8 @@ class _DiscoverPageState extends State<DiscoverPage> {
                         city: data['city']?.toString() ?? 'Nearby',
                         photoUrl: data['photoUrl']?.toString(),
                         gender: data['gender']?.toString(),
+                        isOnline: data['isOnline'] == true,
+                        lastSeen: data['lastSeen'],
                         onPassed: () {
                           setState(() {
                             passedUserIds.add(profiles[index].id);
@@ -198,6 +424,8 @@ class ProfileCard extends StatelessWidget {
   final String city;
   final String? photoUrl;
   final String? gender;
+  final bool isOnline;
+  final dynamic lastSeen;
   final VoidCallback? onPassed;
 
   const ProfileCard({
@@ -208,6 +436,8 @@ class ProfileCard extends StatelessWidget {
     required this.city,
     this.photoUrl,
     this.gender,
+    this.isOnline = false,
+    this.lastSeen,
     this.onPassed,
   });
 
@@ -341,6 +571,103 @@ class ProfileCard extends StatelessWidget {
     }
   }
 
+  Future<void> reportUser(BuildContext context) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null || currentUser.uid == userId) {
+      return;
+    }
+
+    final reasons = [
+      'Fake profile',
+      'Harassment or abusive behavior',
+      'Inappropriate photo',
+      'Spam or scam',
+      'Other',
+    ];
+
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Report User'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: reasons.map((item) {
+              return ListTile(
+                leading: const Icon(Icons.flag_outlined, color: Colors.red),
+                title: Text(item),
+                onTap: () => Navigator.pop(dialogContext, item),
+              );
+            }).toList(),
+          ),
+        );
+      },
+    );
+
+    if (reason == null) {
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance.collection('reports').add({
+        'reporterId': currentUser.uid,
+        'reportedUserId': userId,
+        'reportedUserName': name,
+        'reason': reason,
+        'createdAt': FieldValue.serverTimestamp(),
+        'status': 'pending',
+      });
+
+      if (!context.mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Report submitted. Thank you for helping keep LoveMatch safe.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      debugPrint('Report error: $e');
+
+      if (!context.mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to submit report: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  String _formatLastSeen(dynamic timestamp) {
+    if (timestamp is! Timestamp) {
+      return 'Last seen recently';
+    }
+
+    final lastSeenTime = timestamp.toDate();
+    final difference = DateTime.now().difference(lastSeenTime);
+
+    if (difference.inMinutes < 1) {
+      return 'Last seen just now';
+    }
+
+    if (difference.inMinutes < 60) {
+      return 'Last seen ${difference.inMinutes} min ago';
+    }
+
+    if (difference.inHours < 24) {
+      return 'Last seen ${difference.inHours} hr ago';
+    }
+
+    if (difference.inDays == 1) {
+      return 'Last seen yesterday';
+    }
+
+    return 'Last seen ${difference.inDays} days ago';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -352,6 +679,33 @@ class ProfileCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 18),
       child: Column(
         children: [
+          // Online / Last Seen status
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 14, 18, 0),
+            child: Row(
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    color: isOnline ? Colors.green : Colors.grey,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  isOnline
+                      ? 'Online'
+                      : _formatLastSeen(lastSeen),
+                  style: TextStyle(
+                    color: isOnline ? Colors.green : Colors.grey.shade700,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
           Container(
             height: 330,
             width: double.infinity,
@@ -479,6 +833,20 @@ class ProfileCard extends StatelessWidget {
                     ),
                   ],
                 ),
+                const SizedBox(height: 8),
+                Center(
+                  child: TextButton.icon(
+                    onPressed: () => reportUser(context),
+                    icon: const Icon(
+                      Icons.flag_outlined,
+                      color: Colors.red,
+                    ),
+                    label: const Text(
+                      'Report User',
+                      style: TextStyle(color: Colors.red),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -550,6 +918,88 @@ class _ProfilePageState extends State<ProfilePage> {
       ),
       (route) => false,
     );
+  }
+
+  Future<void> deleteAccount(BuildContext context) async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Delete Account?'),
+          content: const Text(
+            'This will permanently delete your LoveMatch account and profile. This action cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.red,
+              ),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Delete Account'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+
+      // Delete the user's main profile document.
+      await firestore.collection('users').doc(user.uid).delete();
+
+      // Delete the Firebase Authentication account.
+      await user.delete();
+
+      if (!context.mounted) return;
+
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const WelcomePage(),
+        ),
+        (route) => false,
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!context.mounted) return;
+
+      String message;
+
+      if (e.code == 'requires-recent-login') {
+        message =
+            'For security, please log out, log in again, and then delete your account.';
+      } else {
+        message = 'Could not delete account: ${e.message ?? e.code}';
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      debugPrint('Delete account error: $e');
+
+      if (!context.mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not delete account: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   Future<void> changeProfilePhoto() async {
@@ -769,42 +1219,76 @@ class _ProfilePageState extends State<ProfilePage> {
 
                 const SizedBox(height: 30),
 
-                Container(
+                const SizedBox(height: 25),
+
+
+
+                SizedBox(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Colors.pink.shade50,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Column(
-                    children: [
-                      const Icon(
-                        Icons.favorite,
-                        color: Colors.pink,
-                        size: 35,
-                      ),
-                      const SizedBox(height: 10),
-                      const Text(
-                        'My Profile',
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
+                  height: 52,
+                  child: FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.pink,
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const PremiumPage(),
                         ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        photoUrl != null && photoUrl.isNotEmpty
-                            ? 'Profile photo uploaded ❤️'
-                            : 'No profile photo uploaded',
-                        style: const TextStyle(
-                          color: Colors.black54,
-                        ),
-                      ),
-                    ],
+                      );
+                    },
+                    icon: const Icon(Icons.workspace_premium),
+                    label: const Text('Premium Plans ⭐'),
                   ),
                 ),
 
-                const SizedBox(height: 25),
+                const SizedBox(height: 12),
+
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const PrivacyPolicyPage(),
+                        ),
+                      );
+                    },
+                    icon: const Icon(
+                      Icons.privacy_tip,
+                      color: Colors.pink,
+                    ),
+                    label: const Text('Privacy Policy'),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const TermsPage(),
+                        ),
+                      );
+                    },
+                    icon: const Icon(
+                      Icons.gavel,
+                      color: Colors.pink,
+                    ),
+                    label: const Text('Terms & Community Guidelines'),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
 
                 SizedBox(
                   width: double.infinity,
@@ -813,6 +1297,22 @@ class _ProfilePageState extends State<ProfilePage> {
                     onPressed: () => logout(context),
                     icon: const Icon(Icons.logout),
                     label: const Text('Logout'),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                      side: const BorderSide(color: Colors.red),
+                    ),
+                    onPressed: () => deleteAccount(context),
+                    icon: const Icon(Icons.delete_forever),
+                    label: const Text('Delete Account'),
                   ),
                 ),
               ],
