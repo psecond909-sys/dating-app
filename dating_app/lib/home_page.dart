@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
@@ -11,6 +12,7 @@ import 'privacy_policy_page.dart';
 import 'premium_page.dart';
 
 import 'matches_page.dart';
+import 'chat_page.dart';
 import 'likes_received_page.dart';
 import 'main.dart';
 
@@ -21,8 +23,78 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   int selectedIndex = 0;
+  Timer? _presenceTimer;
+
+  void _startPresenceHeartbeat() {
+    _presenceTimer?.cancel();
+    _setOnline();
+    _presenceTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _setOnline(),
+    );
+  }
+
+  void _stopPresenceHeartbeat() {
+    _presenceTimer?.cancel();
+    _presenceTimer = null;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _startPresenceHeartbeat();
+  }
+
+  @override
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startPresenceHeartbeat();
+    } else if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _stopPresenceHeartbeat();
+      _setOffline();
+    }
+  }
+
+  Future<void> _setOnline() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'isOnline': true,
+        'lastSeen': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Online status error: $e');
+    }
+  }
+
+  Future<void> _setOffline() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'isOnline': false,
+        'lastSeen': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Offline status error: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _stopPresenceHeartbeat();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -71,7 +143,6 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-
 class AdBanner extends StatefulWidget {
   const AdBanner({super.key});
 
@@ -88,7 +159,7 @@ class _AdBannerState extends State<AdBanner> {
     super.initState();
 
     _bannerAd = BannerAd(
-      adUnitId: 'ca-app-pub-3940256099942544/6300978111',
+      adUnitId: 'ca-app-pub-9798641582173027/2056471596',
       request: const AdRequest(),
       size: AdSize.banner,
       listener: BannerAdListener(
@@ -138,15 +209,140 @@ class _DiscoverPageState extends State<DiscoverPage> {
   final Set<String> passedUserIds = {};
   Set<String> blockedUserIds = {};
 
+  int _swipeCount = 0;
+  InterstitialAd? _interstitialAd;
+  bool _isLoadingInterstitial = false;
+  bool _isPremium = false;
+  bool _premiumChecked = false;
+
   Position? currentPosition;
   bool locationLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _setOnline();
     _loadBlockedUsers();
     _loadCurrentLocation();
+    _checkPremiumStatus();
+  }
+
+  Future<void> _checkPremiumStatus() async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      if (mounted) {
+        setState(() {
+          _premiumChecked = true;
+        });
+      }
+      return;
+    }
+
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+
+      final data = snapshot.data();
+      final plan = (data?['plan'] ?? 'free').toString().toLowerCase();
+
+      final premium = plan == 'premium';
+
+      if (!mounted) return;
+
+      setState(() {
+        _isPremium = premium;
+        _premiumChecked = true;
+      });
+
+      if (!premium) {
+        _loadInterstitialAd();
+      }
+    } catch (e) {
+      debugPrint('Premium status error: $e');
+
+      if (!mounted) return;
+
+      setState(() {
+        _isPremium = false;
+        _premiumChecked = true;
+      });
+
+      _loadInterstitialAd();
+    }
+  }
+
+  void _loadInterstitialAd() {
+    if (_isPremium) {
+      return;
+    }
+
+    if (_isLoadingInterstitial || _interstitialAd != null) {
+      return;
+    }
+
+    _isLoadingInterstitial = true;
+
+    InterstitialAd.load(
+      adUnitId: 'ca-app-pub-9798641582173027/7143830093',
+      request: const AdRequest(),
+      adLoadCallback: InterstitialAdLoadCallback(
+        onAdLoaded: (ad) {
+          _isLoadingInterstitial = false;
+
+          if (!mounted) {
+            ad.dispose();
+            return;
+          }
+
+          _interstitialAd = ad;
+        },
+        onAdFailedToLoad: (error) {
+          _isLoadingInterstitial = false;
+          debugPrint('Interstitial ad failed: $error');
+        },
+      ),
+    );
+  }
+
+  Future<void> _registerSwipe() async {
+    if (_isPremium) {
+      return;
+    }
+
+    _swipeCount++;
+
+    debugPrint('Profile swipe count: $_swipeCount');
+
+    if (_swipeCount < 5) {
+      return;
+    }
+
+    _swipeCount = 0;
+
+    final ad = _interstitialAd;
+
+    if (ad == null) {
+      _loadInterstitialAd();
+      return;
+    }
+
+    _interstitialAd = null;
+
+    ad.fullScreenContentCallback = FullScreenContentCallback(
+      onAdDismissedFullScreenContent: (ad) {
+        ad.dispose();
+        _loadInterstitialAd();
+      },
+      onAdFailedToShowFullScreenContent: (ad, error) {
+        debugPrint('Interstitial show failed: $error');
+        ad.dispose();
+        _loadInterstitialAd();
+      },
+    );
+
+    ad.show();
   }
 
   Future<void> _loadCurrentLocation() async {
@@ -218,46 +414,6 @@ class _DiscoverPageState extends State<DiscoverPage> {
       });
     } catch (e) {
       debugPrint('Unable to load blocked users: $e');
-    }
-  }
-
-  Future<void> _setOnline() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .set({
-        'isOnline': true,
-        'lastSeen': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    } catch (e) {
-      debugPrint('Online status error: $e');
-    }
-  }
-
-  @override
-  void dispose() {
-    _setOffline();
-    super.dispose();
-  }
-
-  Future<void> _setOffline() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .set({
-        'isOnline': false,
-        'lastSeen': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    } catch (e) {
-      debugPrint('Offline status error: $e');
     }
   }
 
@@ -375,34 +531,154 @@ class _DiscoverPageState extends State<DiscoverPage> {
                     return aDistance.compareTo(bDistance);
                   });
 
-                  if (profiles.isEmpty) {
-                    return const EmptyProfiles();
-                  }
+                  // Always keep a few clearly marked demo profiles
+                  // available for testing the Discover screen.
+                  const demoProfiles = [
+                    {
+                      'id': 'demo_0',
+                      'name': 'Aisha',
+                      'age': 24,
+                      'city': 'Nearby',
+                      'gender': 'Female',
+                      'distanceKm': 0.0,
+                      'photoAsset': 'assets/profiles/profile1.png',
+                    },
+                    {
+                      'id': 'demo_1',
+                      'name': 'Priya',
+                      'age': 26,
+                      'city': 'Nearby',
+                      'gender': 'Female',
+                      'distanceKm': 1.0,
+                      'photoAsset': 'assets/profiles/profile2.png',
+                    },
+                    {
+                      'id': 'demo_2',
+                      'name': 'Ananya',
+                      'age': 23,
+                      'city': 'Nearby',
+                      'gender': 'Female',
+                      'distanceKm': 2.0,
+                      'photoAsset': 'assets/profiles/profile3.png',
+                    },
+                    {
+                      'id': 'demo_3',
+                      'name': 'Rohini',
+                      'age': 27,
+                      'city': 'Nearby',
+                      'gender': 'Female',
+                      'distanceKm': 3.0,
+                      'photoAsset': 'assets/profiles/profile4.png',
+                    },
+                    {
+                      'id': 'demo_4',
+                      'name': 'Aravinda',
+                      'age': 25,
+                      'city': 'Nearby',
+                      'gender': 'Female',
+                      'distanceKm': 4.0,
+                      'photoAsset': 'assets/profiles/profile5.png',
+                    },
+                    {
+                      'id': 'demo_5',
+                      'name': 'Kavya',
+                      'age': 24,
+                      'city': 'Nearby',
+                      'gender': 'Female',
+                      'distanceKm': 5.0,
+                      'photoAsset': 'assets/profiles/profile6.png',
+                    },
+                    {
+                      'id': 'demo_6',
+                      'name': 'Meera',
+                      'age': 28,
+                      'city': 'Nearby',
+                      'gender': 'Female',
+                      'distanceKm': 6.0,
+                      'photoAsset': 'assets/profiles/profile7.png',
+                    },
+                    {
+                      'id': 'demo_7',
+                      'name': 'Sneha',
+                      'age': 26,
+                      'city': 'Nearby',
+                      'gender': 'Female',
+                      'distanceKm': 7.0,
+                      'photoAsset': 'assets/profiles/profile8.png',
+                    },
+                  ];
 
                   return ListView.builder(
-                    itemCount: profiles.length,
+                    itemCount: profiles.length + demoProfiles.length,
                     itemBuilder: (context, index) {
-                      final data = profiles[index].data();
+                      // Real Firebase profiles first.
+                      if (index < profiles.length) {
+                        final doc = profiles[index];
+                        final data = doc.data();
+
+                        double? distanceKm;
+
+                        if (currentPosition != null) {
+                          final lat = (data['latitude'] as num?)?.toDouble();
+                          final lng = (data['longitude'] as num?)?.toDouble();
+
+                          if (lat != null && lng != null) {
+                            final meters = Geolocator.distanceBetween(
+                              currentPosition!.latitude,
+                              currentPosition!.longitude,
+                              lat,
+                              lng,
+                            );
+
+                            distanceKm = meters / 1000;
+                          }
+                        }
+
+                        return ProfileCard(
+                          key: ValueKey(doc.id),
+                          userId: doc.id,
+                          name: data['name']?.toString() ?? 'User',
+                          age: data['age'] is int
+                              ? data['age'] as int
+                              : int.tryParse(
+                                    data['age']?.toString() ?? '',
+                                  ) ??
+                                  18,
+                          city: data['city']?.toString() ?? 'Nearby',
+                          photoUrl: data['photoUrl']?.toString(),
+                          gender: data['gender']?.toString(),
+                          isOnline: data['isOnline'] == true,
+                          lastSeen: data['lastSeen'],
+                          distanceKm: distanceKm,
+                          onPassed: () {
+                            setState(() {
+                              passedUserIds.add(doc.id);
+                            });
+
+                            _registerSwipe();
+                          },
+                        );
+                      }
+
+                      // Demo/test profiles.
+                      final demo = demoProfiles[index - profiles.length];
 
                       return ProfileCard(
-                        key: ValueKey(profiles[index].id),
-                        userId: profiles[index].id,
-                        name: data['name']?.toString() ?? 'User',
-                        age: data['age'] is int
-                            ? data['age'] as int
-                            : int.tryParse(
-                                  data['age']?.toString() ?? '',
-                                ) ??
-                                18,
-                        city: data['city']?.toString() ?? 'Nearby',
-                        photoUrl: data['photoUrl']?.toString(),
-                        gender: data['gender']?.toString(),
-                        isOnline: data['isOnline'] == true,
-                        lastSeen: data['lastSeen'],
+                        key: ValueKey(demo['id']),
+                        userId: demo['id'] as String,
+                        name: demo['name'] as String,
+                        age: demo['age'] as int,
+                        city: demo['city'] as String,
+                        gender: demo['gender'] as String,
+                        photoAsset: demo['photoAsset'] as String?,
+                        distanceKm: (demo['distanceKm'] as num).toDouble(),
+                        isOnline: true,
                         onPassed: () {
                           setState(() {
-                            passedUserIds.add(profiles[index].id);
+                            passedUserIds.add(demo['id'] as String);
                           });
+
+                          _registerSwipe();
                         },
                       );
                     },
@@ -410,6 +686,12 @@ class _DiscoverPageState extends State<DiscoverPage> {
                 },
               ),
             ),
+            if (_premiumChecked && !_isPremium) ...[
+              const SizedBox(height: 8),
+              const Center(
+                child: AdBanner(),
+              ),
+            ],
           ],
         ),
       ),
@@ -423,9 +705,11 @@ class ProfileCard extends StatelessWidget {
   final int age;
   final String city;
   final String? photoUrl;
+  final String? photoAsset;
   final String? gender;
   final bool isOnline;
   final dynamic lastSeen;
+  final double? distanceKm;
   final VoidCallback? onPassed;
 
   const ProfileCard({
@@ -435,9 +719,11 @@ class ProfileCard extends StatelessWidget {
     required this.age,
     required this.city,
     this.photoUrl,
+    this.photoAsset,
     this.gender,
     this.isOnline = false,
     this.lastSeen,
+    this.distanceKm,
     this.onPassed,
   });
 
@@ -464,6 +750,57 @@ class ProfileCard extends StatelessWidget {
     }
   }
 
+  Future<void> pingUser(BuildContext context) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null) {
+      return;
+    }
+
+    final firestore = FirebaseFirestore.instance;
+
+    try {
+      await firestore
+          .collection('users')
+          .doc(currentUser.uid)
+          .collection('pings')
+          .doc(userId)
+          .set({
+        'userId': userId,
+        'createdAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (!context.mounted) {
+        return;
+      }
+
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatPage(
+            userId: userId,
+            userName: name,
+          ),
+        ),
+      );
+
+      if (!context.mounted) {
+        return;
+      }
+    } catch (e) {
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Ping error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   Future<void> likeUser(BuildContext context) async {
     final currentUser = FirebaseAuth.instance.currentUser;
 
@@ -474,6 +811,53 @@ class ProfileCard extends StatelessWidget {
     final firestore = FirebaseFirestore.instance;
 
     try {
+      // Fake/demo profiles are local app profiles, not Firebase users.
+      // They automatically like the current user back, creating a match.
+      final isFakeProfile = userId.startsWith('demo_');
+
+      if (isFakeProfile) {
+        final ids = [currentUser.uid, userId]..sort();
+        final matchId = ids.join('_');
+
+        // Save the match for the real signed-in user only.
+        await firestore
+            .collection('users')
+            .doc(currentUser.uid)
+            .collection('matches')
+            .doc(userId)
+            .set({
+          'userId': userId,
+          'matchId': matchId,
+          'name': name,
+          'isDemo': true,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+
+        // Save the top-level match. The signed-in user is a member,
+        // so this is allowed by the Firestore rules.
+        await firestore.collection('matches').doc(matchId).set({
+          'users': ids,
+          'createdAt': FieldValue.serverTimestamp(),
+          'isDemo': true,
+        });
+
+        if (!context.mounted) return;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("It's a match with $name! ❤️"),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+
+        onPassed?.call();
+        return;
+      }
+
+      // -----------------------------
+      // REAL FIREBASE USER
+      // -----------------------------
+
       final myLikeRef = firestore
           .collection('users')
           .doc(currentUser.uid)
@@ -487,24 +871,46 @@ class ProfileCard extends StatelessWidget {
           .doc(currentUser.uid);
 
       // Save my like.
-      await myLikeRef.set({
-        'userId': userId,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      debugPrint('LIKE STEP 1: saving myLike');
+      try {
+        await myLikeRef.set({
+          'userId': userId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+        debugPrint('LIKE STEP 1 SUCCESS');
+      } catch (e) {
+        debugPrint('LIKE STEP 1 FAILED: $e');
+        rethrow;
+      }
 
-      // Notify the other user.
-      await firestore
-          .collection('users')
-          .doc(userId)
-          .collection('receivedLikes')
-          .doc(currentUser.uid)
-          .set({
-        'userId': currentUser.uid,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      // Notify the other real user.
+      debugPrint('LIKE STEP 2: saving receivedLike');
+      try {
+        await firestore
+            .collection('users')
+            .doc(userId)
+            .collection('receivedLikes')
+            .doc(currentUser.uid)
+            .set({
+          'userId': currentUser.uid,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+        debugPrint('LIKE STEP 2 SUCCESS');
+      } catch (e) {
+        debugPrint('LIKE STEP 2 FAILED: $e');
+        rethrow;
+      }
 
       // Check whether they already liked me.
-      final otherLike = await otherLikeRef.get();
+      debugPrint('LIKE STEP 3: checking otherLike');
+      late final DocumentSnapshot<Map<String, dynamic>> otherLike;
+      try {
+        otherLike = await otherLikeRef.get();
+        debugPrint('LIKE STEP 3 SUCCESS');
+      } catch (e) {
+        debugPrint('LIKE STEP 3 FAILED: $e');
+        rethrow;
+      }
 
       if (otherLike.exists) {
         // MUTUAL LIKE = MATCH ❤️
@@ -516,7 +922,7 @@ class ProfileCard extends StatelessWidget {
           'createdAt': FieldValue.serverTimestamp(),
         });
 
-        // Save match for both users.
+        // Save match for both real users.
         await firestore
             .collection('users')
             .doc(currentUser.uid)
@@ -552,19 +958,22 @@ class ProfileCard extends StatelessWidget {
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('You liked $name ❤️ You can message them up to 5 times today.'),
+            content: Text('You liked $name ❤️'),
             behavior: SnackBarBehavior.floating,
           ),
         );
       }
 
       onPassed?.call();
-    } catch (e) {
+    } catch (e, stack) {
+      debugPrint('LIKE ERROR: $e');
+      debugPrint('LIKE STACK: $stack');
+
       if (!context.mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Like error: $e'),
+          content: Text('LIKE ERROR: $e'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -623,7 +1032,8 @@ class ProfileCard extends StatelessWidget {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Report submitted. Thank you for helping keep LoveMatch safe.'),
+          content: Text(
+              'Report submitted. Thank you for helping keep LoveMatch safe.'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -694,9 +1104,7 @@ class ProfileCard extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  isOnline
-                      ? 'Online'
-                      : _formatLastSeen(lastSeen),
+                  isOnline ? 'Online' : _formatLastSeen(lastSeen),
                   style: TextStyle(
                     color: isOnline ? Colors.green : Colors.grey.shade700,
                     fontWeight: FontWeight.w600,
@@ -719,29 +1127,36 @@ class ProfileCard extends StatelessWidget {
                 ],
               ),
             ),
-            child: photoUrl != null && photoUrl!.isNotEmpty
-                ? Image.network(
-                    photoUrl!,
+            child: photoAsset != null && photoAsset!.isNotEmpty
+                ? Image.asset(
+                    photoAsset!,
                     width: double.infinity,
                     height: 330,
                     fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) {
-                      return const Center(
+                  )
+                : photoUrl != null && photoUrl!.isNotEmpty
+                    ? Image.network(
+                        photoUrl!,
+                        width: double.infinity,
+                        height: 330,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) {
+                          return const Center(
+                            child: Icon(
+                              Icons.person,
+                              size: 140,
+                              color: Colors.white,
+                            ),
+                          );
+                        },
+                      )
+                    : const Center(
                         child: Icon(
                           Icons.person,
                           size: 140,
                           color: Colors.white,
                         ),
-                      );
-                    },
-                  )
-                : const Center(
-                    child: Icon(
-                      Icons.person,
-                      size: 140,
-                      color: Colors.white,
-                    ),
-                  ),
+                      ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
@@ -757,6 +1172,7 @@ class ProfileCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 5),
                 Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     const Icon(
                       Icons.location_on,
@@ -770,6 +1186,24 @@ class ProfileCard extends StatelessWidget {
                         fontSize: 15,
                       ),
                     ),
+                    if (distanceKm != null) ...[
+                      const SizedBox(width: 10),
+                      const Text(
+                        '•',
+                        style: TextStyle(
+                          color: Colors.black45,
+                          fontSize: 15,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        '${distanceKm!.toStringAsFixed(distanceKm! < 1 ? 1 : 0)} km away',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
                 if (gender != null && gender!.isNotEmpty) ...[
@@ -795,40 +1229,94 @@ class ProfileCard extends StatelessWidget {
                 Row(
                   children: [
                     Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () async {
-                          await passUser();
+                      child: SizedBox(
+                        height: 42,
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            padding: EdgeInsets.zero,
+                            minimumSize: const Size(0, 42),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          onPressed: () async {
+                            await passUser();
 
-                          onPassed?.call();
+                            onPassed?.call();
 
-                          if (!context.mounted) {
-                            return;
-                          }
+                            if (!context.mounted) {
+                              return;
+                            }
 
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Passed'),
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
-                        },
-                        icon: const Icon(
-                          Icons.close,
-                          color: Colors.redAccent,
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Passed'),
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          },
+                          icon: const Icon(
+                            Icons.close,
+                            color: Colors.redAccent,
+                            size: 17,
+                          ),
+                          label: const Text(
+                            'Pass',
+                            maxLines: 1,
+                            overflow: TextOverflow.clip,
+                            style: TextStyle(fontSize: 12),
+                          ),
                         ),
-                        label: const Text('Pass'),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 6),
                     Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.pink,
-                          foregroundColor: Colors.white,
+                      child: SizedBox(
+                        height: 42,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.pink,
+                            foregroundColor: Colors.white,
+                            padding: EdgeInsets.zero,
+                            minimumSize: const Size(0, 42),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          onPressed: () => likeUser(context),
+                          icon: const Icon(
+                            Icons.favorite,
+                            size: 17,
+                          ),
+                          label: const Text(
+                            'Like',
+                            maxLines: 1,
+                            overflow: TextOverflow.clip,
+                            style: TextStyle(fontSize: 12),
+                          ),
                         ),
-                        onPressed: () => likeUser(context),
-                        icon: const Icon(Icons.favorite),
-                        label: const Text('Like'),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: SizedBox(
+                        height: 42,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.deepPurple,
+                            foregroundColor: Colors.white,
+                            padding: EdgeInsets.zero,
+                            minimumSize: const Size(0, 42),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          onPressed: () => pingUser(context),
+                          icon: const Icon(
+                            Icons.chat_bubble_outline,
+                            size: 17,
+                          ),
+                          label: const Text(
+                            'Ping',
+                            maxLines: 1,
+                            overflow: TextOverflow.clip,
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ),
                       ),
                     ),
                   ],
@@ -907,6 +1395,19 @@ class _ProfilePageState extends State<ProfilePage> {
   bool uploadingPhoto = false;
 
   Future<void> logout(BuildContext context) async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user != null) {
+      try {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+          'isOnline': false,
+          'lastSeen': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      } catch (e) {
+        debugPrint('Logout offline status error: $e');
+      }
+    }
+
     await FirebaseAuth.instance.signOut();
 
     if (!context.mounted) return;
@@ -1104,8 +1605,7 @@ class _ProfilePageState extends State<ProfilePage> {
             age = now.year - birthDate.year;
 
             if (now.month < birthDate.month ||
-                (now.month == birthDate.month &&
-                    now.day < birthDate.day)) {
+                (now.month == birthDate.month && now.day < birthDate.day)) {
               age--;
             }
           } else if (data['age'] is int) {
@@ -1122,10 +1622,9 @@ class _ProfilePageState extends State<ProfilePage> {
                     CircleAvatar(
                       radius: 75,
                       backgroundColor: const Color(0xFFFFE0E6),
-                      backgroundImage:
-                          photoUrl != null && photoUrl.isNotEmpty
-                              ? NetworkImage(photoUrl)
-                              : null,
+                      backgroundImage: photoUrl != null && photoUrl.isNotEmpty
+                          ? NetworkImage(photoUrl)
+                          : null,
                       child: photoUrl == null || photoUrl.isEmpty
                           ? const Icon(
                               Icons.person,
@@ -1140,8 +1639,7 @@ class _ProfilePageState extends State<ProfilePage> {
                         shape: BoxShape.circle,
                       ),
                       child: IconButton(
-                        onPressed:
-                            uploadingPhoto ? null : changeProfilePhoto,
+                        onPressed: uploadingPhoto ? null : changeProfilePhoto,
                         icon: uploadingPhoto
                             ? const SizedBox(
                                 width: 20,
@@ -1159,25 +1657,18 @@ class _ProfilePageState extends State<ProfilePage> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 12),
-
                 TextButton.icon(
-                  onPressed:
-                      uploadingPhoto ? null : changeProfilePhoto,
+                  onPressed: uploadingPhoto ? null : changeProfilePhoto,
                   icon: const Icon(
                     Icons.photo_library,
                     color: Colors.pink,
                   ),
                   label: Text(
-                    uploadingPhoto
-                        ? 'Uploading...'
-                        : 'Change Profile Picture',
+                    uploadingPhoto ? 'Uploading...' : 'Change Profile Picture',
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 Text(
                   name,
                   style: const TextStyle(
@@ -1185,7 +1676,6 @@ class _ProfilePageState extends State<ProfilePage> {
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-
                 if (age != null) ...[
                   const SizedBox(height: 5),
                   Text(
@@ -1196,7 +1686,6 @@ class _ProfilePageState extends State<ProfilePage> {
                     ),
                   ),
                 ],
-
                 if (gender.isNotEmpty) ...[
                   const SizedBox(height: 5),
                   Text(
@@ -1207,22 +1696,15 @@ class _ProfilePageState extends State<ProfilePage> {
                     ),
                   ),
                 ],
-
                 const SizedBox(height: 8),
-
                 Text(
                   user.email ?? '',
                   style: const TextStyle(
                     color: Colors.black54,
                   ),
                 ),
-
                 const SizedBox(height: 30),
-
                 const SizedBox(height: 25),
-
-
-
                 SizedBox(
                   width: double.infinity,
                   height: 52,
@@ -1243,9 +1725,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     label: const Text('Premium Plans ⭐'),
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 SizedBox(
                   width: double.infinity,
                   height: 52,
@@ -1265,9 +1745,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     label: const Text('Privacy Policy'),
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 SizedBox(
                   width: double.infinity,
                   height: 52,
@@ -1287,9 +1765,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     label: const Text('Terms & Community Guidelines'),
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 SizedBox(
                   width: double.infinity,
                   height: 52,
@@ -1299,9 +1775,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     label: const Text('Logout'),
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 SizedBox(
                   width: double.infinity,
                   height: 52,

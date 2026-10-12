@@ -2,7 +2,7 @@ name: dating_app
 description: LoveMatch dating app MVP
 publish_to: "none"
 
-version: 1.0.0+1
+version: 1.0.4+8
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -21,6 +21,9 @@ dependencies:
   image_picker: ^1.2.3
   emoji_picker_flutter: ^4.5.3
   firebase_messaging: ^16.6.0
+  google_mobile_ads: ^9.1.0
+  cloud_functions: ^6.4.0
+  flutter_local_notifications: ^22.3.1
 
 dev_dependencies:
   flutter_test:
@@ -31,3 +34,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/profiles/
+    - assets/lovira_splash.png

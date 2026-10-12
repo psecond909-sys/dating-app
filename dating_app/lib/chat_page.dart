@@ -1,4 +1,8 @@
+import 'dart:async';
 import 'dart:io';
+
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
@@ -22,12 +26,22 @@ class ChatPage extends StatefulWidget {
 }
 
 class _ChatPageState extends State<ChatPage> {
+  bool _hasBlockedUser = false;
+
   final messageController = TextEditingController();
   final ImagePicker imagePicker = ImagePicker();
 
   bool showEmojiPicker = false;
   bool sendingImage = false;
   bool isTyping = false;
+
+  final InAppPurchase _iap = InAppPurchase.instance;
+  StreamSubscription<List<PurchaseDetails>>? _coinPurchaseSubscription;
+  bool _coinPurchaseInProgress = false;
+  ProductDetails? _coinProduct;
+  final Set<String> _coinTokensBeingVerified = <String>{};
+
+  static const String _coinProductId = 'coins_20';
 
   String get chatId {
     final currentUser = FirebaseAuth.instance.currentUser;
@@ -49,10 +63,7 @@ class _ChatPageState extends State<ChatPage> {
     }
 
     try {
-      await FirebaseFirestore.instance
-          .collection('chats')
-          .doc(chatId)
-          .set({
+      await FirebaseFirestore.instance.collection('chats').doc(chatId).set({
         'typing_${currentUser.uid}': typing,
       }, SetOptions(merge: true));
     } catch (_) {
@@ -68,32 +79,30 @@ class _ChatPageState extends State<ChatPage> {
     }
 
     final firestore = FirebaseFirestore.instance;
+    final userRef = firestore.collection('users').doc(currentUser.uid);
 
-    final matchRef = firestore
-        .collection('users')
-        .doc(currentUser.uid)
-        .collection('matches')
-        .doc(widget.userId);
-
+    // Messages are unlimited after a mutual match.
+    final matchRef = userRef.collection('matches').doc(widget.userId);
     final match = await matchRef.get();
 
     if (match.exists) {
       return true;
     }
 
-    final today = DateTime.now();
+    // Premium users can message without a match without a limit.
+    final userSnapshot = await userRef.get();
+    final plan =
+        (userSnapshot.data()?['plan'] ?? 'free').toString().toLowerCase();
 
-    final dayKey =
-        '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+    if (plan == 'premium') {
+      return true;
+    }
 
-    final counterRef = firestore
-        .collection('users')
-        .doc(currentUser.uid)
-        .collection('dailyMessageCounts')
-        .doc('${widget.userId}_$dayKey');
+    // Free and Silver: 5 messages per recipient overall, not per day.
+    final counterRef =
+        userRef.collection('dailyMessageCounts').doc(widget.userId);
 
     final counter = await counterRef.get();
-
     final count = (counter.data()?['count'] as num?)?.toInt() ?? 0;
 
     if (count >= 5) {
@@ -101,13 +110,13 @@ class _ChatPageState extends State<ChatPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'You have used your 5 messages for today. '
-              'If they like you back, you can chat unlimited ❤️',
+              'You have used your 5 messages to this person. '
+              'Upgrade to Premium for unlimited messaging, '
+              'or match to chat without limits ❤️',
             ),
           ),
         );
       }
-
       return false;
     }
 
@@ -121,38 +130,47 @@ class _ChatPageState extends State<ChatPage> {
       return;
     }
 
-    final matchRef = FirebaseFirestore.instance
-        .collection('users')
-        .doc(currentUser.uid)
-        .collection('matches')
-        .doc(widget.userId);
+    final firestore = FirebaseFirestore.instance;
+    final userRef = firestore.collection('users').doc(currentUser.uid);
 
+    // Do not count messages sent after a match.
+    final matchRef = userRef.collection('matches').doc(widget.userId);
     final match = await matchRef.get();
 
     if (match.exists) {
       return;
     }
 
-    final today = DateTime.now();
+    // Premium messages without a match are unlimited.
+    final userSnapshot = await userRef.get();
+    final plan =
+        (userSnapshot.data()?['plan'] ?? 'free').toString().toLowerCase();
 
-    final dayKey =
-        '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+    if (plan == 'premium') {
+      return;
+    }
 
-    final counterRef = FirebaseFirestore.instance
-        .collection('users')
-        .doc(currentUser.uid)
-        .collection('dailyMessageCounts')
-        .doc('${widget.userId}_$dayKey');
+    // Stable counter per recipient; there is no date and no daily reset.
+    final counterRef =
+        userRef.collection('dailyMessageCounts').doc(widget.userId);
 
     await counterRef.set({
       'count': FieldValue.increment(1),
-      'date': dayKey,
       'userId': widget.userId,
     }, SetOptions(merge: true));
   }
 
   Future<void> sendMessage() async {
     final text = messageController.text.trim();
+
+    final blocked = await _isBlocked();
+    if (blocked) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('You cannot message this user.')),
+      );
+      return;
+    }
 
     await updateTypingStatus(false);
     isTyping = false;
@@ -203,6 +221,15 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> pickAndSendImage() async {
     final currentUser = FirebaseAuth.instance.currentUser;
+
+    final blocked = await _isBlocked();
+    if (blocked) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('You cannot message this user.')),
+      );
+      return;
+    }
 
     if (currentUser == null || chatId.isEmpty) {
       return;
@@ -281,8 +308,12 @@ class _ChatPageState extends State<ChatPage> {
     bool mine, {
     String? imageUrl,
     DateTime? timestamp,
+    String type = 'text',
+    String? giftName,
+    String? giftEmoji,
   }) {
     final hasImage = imageUrl != null && imageUrl.isNotEmpty;
+    final isGift = type == 'gift';
 
     return Align(
       alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
@@ -312,58 +343,22 @@ class _ChatPageState extends State<ChatPage> {
             ),
           ],
         ),
-        child: hasImage
-            ? ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: Image.network(
-                  imageUrl,
-                  width: 260,
-                  height: 260,
-                  fit: BoxFit.cover,
-                  loadingBuilder: (
-                    context,
-                    child,
-                    loadingProgress,
-                  ) {
-                    if (loadingProgress == null) {
-                      return child;
-                    }
-
-                    return const SizedBox(
-                      width: 260,
-                      height: 260,
-                      child: Center(
-                        child: CircularProgressIndicator(
-                          color: Colors.pink,
-                        ),
-                      ),
-                    );
-                  },
-                  errorBuilder: (context, error, stackTrace) {
-                    return const SizedBox(
-                      width: 260,
-                      height: 120,
-                      child: Center(
-                        child: Icon(
-                          Icons.broken_image,
-                          size: 45,
-                          color: Colors.grey,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              )
-            : Column(
-                crossAxisAlignment:
-                    mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        child: isGift
+            ? Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    text,
+                    giftEmoji ?? '🎁',
+                    style: const TextStyle(fontSize: 48),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    giftName ?? text,
+                    textAlign: TextAlign.center,
                     style: TextStyle(
                       color: mine ? Colors.white : Colors.black87,
                       fontSize: 16,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
                   if (timestamp != null) ...[
@@ -371,16 +366,697 @@ class _ChatPageState extends State<ChatPage> {
                     Text(
                       '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}',
                       style: TextStyle(
-                        color: mine
-                            ? Colors.white70
-                            : Colors.black45,
+                        color: mine ? Colors.white70 : Colors.black45,
                         fontSize: 11,
                       ),
                     ),
                   ],
                 ],
-              ),
+              )
+            : hasImage
+                ? ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: Image.network(
+                      imageUrl,
+                      width: 260,
+                      height: 260,
+                      fit: BoxFit.cover,
+                      loadingBuilder: (
+                        context,
+                        child,
+                        loadingProgress,
+                      ) {
+                        if (loadingProgress == null) {
+                          return child;
+                        }
+
+                        return const SizedBox(
+                          width: 260,
+                          height: 260,
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              color: Colors.pink,
+                            ),
+                          ),
+                        );
+                      },
+                      errorBuilder: (context, error, stackTrace) {
+                        return const SizedBox(
+                          width: 260,
+                          height: 120,
+                          child: Center(
+                            child: Icon(
+                              Icons.broken_image,
+                              size: 45,
+                              color: Colors.grey,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  )
+                : Column(
+                    crossAxisAlignment: mine
+                        ? CrossAxisAlignment.end
+                        : CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        text,
+                        style: TextStyle(
+                          color: mine ? Colors.white : Colors.black87,
+                          fontSize: 16,
+                        ),
+                      ),
+                      if (timestamp != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}',
+                          style: TextStyle(
+                            color: mine ? Colors.white70 : Colors.black45,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
       ),
+    );
+  }
+
+  Future<bool> _isMutualMatch() async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null || widget.userId.isEmpty) {
+      return false;
+    }
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+
+      final myMatch = await firestore
+          .collection('users')
+          .doc(currentUser.uid)
+          .collection('matches')
+          .doc(widget.userId)
+          .get();
+
+      if (!myMatch.exists) {
+        return false;
+      }
+
+      final theirMatch = await firestore
+          .collection('users')
+          .doc(widget.userId)
+          .collection('matches')
+          .doc(currentUser.uid)
+          .get();
+
+      return theirMatch.exists;
+    } catch (e) {
+      debugPrint('Mutual match check error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _isBlocked() async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null) {
+      return true;
+    }
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+
+      final iBlockedThem = await firestore
+          .collection('users')
+          .doc(currentUser.uid)
+          .collection('blockedUsers')
+          .doc(widget.userId)
+          .get();
+
+      if (iBlockedThem.exists) {
+        return true;
+      }
+
+      final theyBlockedMe = await firestore
+          .collection('users')
+          .doc(widget.userId)
+          .collection('blockedUsers')
+          .doc(currentUser.uid)
+          .get();
+
+      return theyBlockedMe.exists;
+    } catch (e) {
+      debugPrint('Block check error: $e');
+      return false;
+    }
+  }
+
+  Future<void> _loadBlockedStatus() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('blockedUsers')
+          .doc(widget.userId)
+          .get();
+
+      if (!mounted) return;
+      setState(() => _hasBlockedUser = doc.exists);
+    } catch (e) {
+      debugPrint('Load blocked status error: $e');
+    }
+  }
+
+  Future<void> _unblockUser() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Unblock User?'),
+        content: Text('Allow ${widget.userName} to interact with you again?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Unblock'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('blockedUsers')
+          .doc(widget.userId)
+          .delete();
+
+      if (!mounted) return;
+      setState(() => _hasBlockedUser = false);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${widget.userName} has been unblocked.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not unblock user: $e')),
+      );
+    }
+  }
+
+  Future<void> _showBlockDialog() async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null || currentUser.uid == widget.userId) {
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Block User?'),
+        content: Text(
+          'You will no longer be able to message ${widget.userName}. '
+          'You can unblock this user later from the chat menu.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Block'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentUser.uid)
+          .collection('blockedUsers')
+          .doc(widget.userId)
+          .set({
+        'blockedUserId': widget.userId,
+        'blockedUserName': widget.userName,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${widget.userName} has been blocked.')),
+      );
+
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not block user: $e')),
+      );
+    }
+  }
+
+  Future<void> sendGift(String giftName, String giftEmoji) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null || chatId.isEmpty) return;
+
+    try {
+      final blocked = await _isBlocked();
+
+      if (blocked) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('You cannot message this user.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      final matched = await _isMutualMatch();
+
+      if (!matched) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Gifts can be sent after you both match ❤️'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      await FirebaseFunctions.instance.httpsCallable('sendGift').call({
+        'receiverId': widget.userId,
+        'giftName': giftName,
+        'giftEmoji': giftEmoji,
+      });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$giftEmoji $giftName sent!'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on FirebaseFunctionsException catch (e) {
+      if (!mounted) return;
+
+      final message = e.message ??
+          (e.code == 'unavailable'
+              ? 'Service temporarily unavailable. Please try again.'
+              : 'Could not send gift. Please try again.');
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+          action: e.code == 'failed-precondition'
+              ? SnackBarAction(
+                  label: 'BUY COINS',
+                  onPressed: _showBuyCoins,
+                )
+              : null,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not send gift. Please try again.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      debugPrint('Gift error: $e');
+    }
+  }
+
+  Future<void> _buyCoins() async {
+    if (_coinPurchaseInProgress) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please sign in to buy coins.')),
+      );
+      return;
+    }
+
+    setState(() => _coinPurchaseInProgress = true);
+
+    try {
+      final available = await _iap.isAvailable();
+      if (!available) {
+        throw Exception('Google Play Billing is unavailable on this device.');
+      }
+
+      ProductDetails? product = _coinProduct;
+      if (product == null) {
+        final response = await _iap.queryProductDetails(
+          <String>{_coinProductId},
+        );
+
+        if (response.error != null) {
+          throw Exception(response.error!.message);
+        }
+        if (response.productDetails.isEmpty) {
+          throw Exception(
+            'Coin product is unavailable. Check the Play Console product '
+            'and tester account.',
+          );
+        }
+
+        product = response.productDetails.firstWhere(
+          (item) => item.id == _coinProductId,
+        );
+        _coinProduct = product;
+      }
+
+      // Coins are consumable: users must be able to buy this pack again.
+      final started = await _iap.buyConsumable(
+        purchaseParam: PurchaseParam(productDetails: product),
+        autoConsume: false,
+      );
+
+      if (!started) {
+        throw Exception('Google Play did not start the purchase.');
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not start coin purchase: $e')),
+        );
+      }
+      debugPrint('Coin purchase start error: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _coinPurchaseInProgress = false);
+      }
+    }
+  }
+
+  Future<void> _handleCoinPurchaseUpdates(
+    List<PurchaseDetails> purchases,
+  ) async {
+    for (final purchase in purchases) {
+      if (purchase.productID != _coinProductId) continue;
+
+      if (purchase.status == PurchaseStatus.pending) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Coin purchase is pending.')),
+          );
+        }
+        continue;
+      }
+
+      if (purchase.status == PurchaseStatus.error ||
+          purchase.status == PurchaseStatus.canceled) {
+        debugPrint('Coin purchase ${purchase.status}: ${purchase.error}');
+        if (purchase.pendingCompletePurchase) {
+          try {
+            await _iap.completePurchase(purchase);
+          } catch (e) {
+            debugPrint('Could not complete failed coin purchase: $e');
+          }
+        }
+        if (mounted && purchase.status == PurchaseStatus.error) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                purchase.error?.message ?? 'Coin purchase failed.',
+              ),
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (purchase.status != PurchaseStatus.purchased &&
+          purchase.status != PurchaseStatus.restored) {
+        continue;
+      }
+
+      final token = purchase.verificationData.serverVerificationData;
+      if (token.isEmpty) {
+        debugPrint('Coin purchase has no server verification token.');
+        continue;
+      }
+      if (!_coinTokensBeingVerified.add(token)) continue;
+
+      try {
+        final result = await FirebaseFunctions.instance
+            .httpsCallable('verifyCoinPurchase')
+            .call(<String, dynamic>{
+          'productId': _coinProductId,
+          'purchaseToken': token,
+        });
+
+        final data = Map<String, dynamic>.from(result.data as Map);
+        if (data['success'] != true) {
+          throw Exception('Server did not confirm the coin purchase.');
+        }
+
+        // Complete only after the backend confirms the purchase.
+        if (purchase.pendingCompletePurchase) {
+          await _iap.completePurchase(purchase);
+        }
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '20 coins added! Balance: ${data['coins'] ?? 'updated'}',
+              ),
+            ),
+          );
+        }
+      } on FirebaseFunctionsException catch (e) {
+        debugPrint('Coin verification failed: ${e.code} ${e.message}');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Purchase verification failed. Your purchase has not been '
+                'confirmed yet. Please try again later. ${e.message ?? ''}',
+              ),
+            ),
+          );
+        }
+        // Do not complete an unverified purchase.
+      } catch (e) {
+        debugPrint('Coin purchase verification error: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Could not verify the purchase. Please try again later.',
+              ),
+            ),
+          );
+        }
+        // Do not complete an unverified purchase.
+      } finally {
+        _coinTokensBeingVerified.remove(token);
+      }
+    }
+  }
+
+  void _showBuyCoins() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Buy Coins 🪙',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Send special gifts to your matches.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 20),
+                Card(
+                  child: ListTile(
+                    leading: const Text(
+                      '🪙',
+                      style: TextStyle(fontSize: 30),
+                    ),
+                    title: const Text(
+                      '20 Coins',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    subtitle: const Text('₹100'),
+                    trailing: ElevatedButton(
+                      onPressed: _coinPurchaseInProgress
+                          ? null
+                          : () {
+                              Navigator.pop(sheetContext);
+                              _buyCoins();
+                            },
+                      child: Text(
+                        _coinPurchaseInProgress ? 'PLEASE WAIT' : 'BUY',
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Each gift costs 1 coin.',
+                  style: TextStyle(color: Colors.black54),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showGiftPicker() {
+    showModalBottomSheet(
+      context: context,
+      builder: (sheetContext) {
+        final gifts = [
+          ('Rose', '🌹'),
+          ('Kiss', '💋'),
+          ('Hug', '🤗'),
+          ('Heart', '❤️'),
+          ('Love', '💕'),
+          ('Heart Eyes', '😍'),
+          ('Cake', '🎂'),
+          ('Cupcake', '🧁'),
+          ('Chocolates', '🍫'),
+          ('Coffee', '☕'),
+          ('Drink', '🥤'),
+          ('Wine', '🍷'),
+          ('Champagne', '🥂'),
+          ('Pen', '🖊️'),
+          ('Pencil', '✏️'),
+          ('Bandage', '🩹'),
+          ('Gift', '🎁'),
+          ('Teddy Bear', '🧸'),
+          ('Flower', '🌸'),
+          ('Sunflower', '🌻'),
+          ('Tulip', '🌷'),
+          ('Star', '⭐'),
+          ('Sparkles', '✨'),
+          ('Crown', '👑'),
+          ('Diamond', '💎'),
+          ('Fire', '🔥'),
+          ('Rainbow', '🌈'),
+          ('Balloon', '🎈'),
+          ('Ice Cream', '🍦'),
+          ('Pizza', '🍕'),
+        ];
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Send a Gift 🎁',
+                  style: TextStyle(
+                    fontSize: 23,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const Text('Each gift costs 1 coin 🪙'),
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: gifts.map((gift) {
+                    return InkWell(
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        sendGift(gift.$1, gift.$2);
+                      },
+                      borderRadius: BorderRadius.circular(18),
+                      child: Container(
+                        width: 72,
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 12,
+                        ),
+                        child: Column(
+                          children: [
+                            Text(
+                              gift.$2,
+                              style: const TextStyle(fontSize: 38),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              gift.$1,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            const Text(
+                              '1 🪙',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.black54,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 20),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(sheetContext);
+                    _showBuyCoins();
+                  },
+                  icon: const Icon(Icons.add_circle_outline),
+                  label: const Text('Buy 20 Coins • ₹100'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -456,10 +1132,7 @@ class _ChatPageState extends State<ChatPage> {
 
     final ids = [currentUser.uid, widget.userId]..sort();
 
-    await FirebaseFirestore.instance
-        .collection('chats')
-        .doc(chatId)
-        .set({
+    await FirebaseFirestore.instance.collection('chats').doc(chatId).set({
       'users': ids,
       'user1': ids[0],
       'user2': ids[1],
@@ -470,7 +1143,15 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
-    updateOnlineStatus(true);
+
+    _coinPurchaseSubscription = _iap.purchaseStream.listen(
+      _handleCoinPurchaseUpdates,
+      onError: (Object error) {
+        debugPrint('Coin purchase stream error: $error');
+      },
+    );
+
+    _loadBlockedStatus();
     ensureChatExists();
     markMessagesAsRead();
 
@@ -486,8 +1167,8 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    _coinPurchaseSubscription?.cancel();
     updateTypingStatus(false);
-    updateOnlineStatus(false);
     messageController.dispose();
     super.dispose();
   }
@@ -509,6 +1190,39 @@ class _ChatPageState extends State<ChatPage> {
       appBar: AppBar(
         elevation: 1,
         backgroundColor: Colors.white,
+        actions: [
+          PopupMenuButton<String>(
+            tooltip: 'Chat options',
+            icon: const Icon(Icons.more_vert, color: Colors.black87),
+            onSelected: (value) {
+              if (value == 'block') {
+                _showBlockDialog();
+              } else if (value == 'unblock') {
+                _unblockUser();
+              }
+            },
+            itemBuilder: (context) => [
+              if (_hasBlockedUser)
+                const PopupMenuItem<String>(
+                  value: 'unblock',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.check_circle_outline),
+                    title: Text('Unblock User'),
+                  ),
+                )
+              else
+                const PopupMenuItem<String>(
+                  value: 'block',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.block),
+                    title: Text('Block User'),
+                  ),
+                ),
+            ],
+          ),
+        ],
         title: Row(
           children: [
             const CircleAvatar(
@@ -557,8 +1271,7 @@ class _ChatPageState extends State<ChatPage> {
                   Future.microtask(markMessagesAsRead);
                 }
 
-                if (snapshot.connectionState ==
-                    ConnectionState.waiting) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(
                     child: CircularProgressIndicator(
                       color: Colors.pink,
@@ -601,14 +1314,11 @@ class _ChatPageState extends State<ChatPage> {
                   itemBuilder: (context, index) {
                     final data = messages[index].data();
 
-                    final text =
-                        data['text'] as String? ?? '';
+                    final text = data['text'] as String? ?? '';
 
-                    final imageUrl =
-                        data['imageUrl'] as String?;
+                    final imageUrl = data['imageUrl'] as String?;
 
-                    final senderId =
-                        data['senderId'] as String? ?? '';
+                    final senderId = data['senderId'] as String? ?? '';
 
                     final timestampValue = data['createdAt'];
                     final timestamp = timestampValue is Timestamp
@@ -620,13 +1330,15 @@ class _ChatPageState extends State<ChatPage> {
                       senderId == currentUser.uid,
                       imageUrl: imageUrl,
                       timestamp: timestamp,
+                      type: data['type'] as String? ?? 'text',
+                      giftName: data['giftName'] as String?,
+                      giftEmoji: data['giftEmoji'] as String?,
                     );
                   },
                 );
               },
             ),
           ),
-
           StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
             stream: FirebaseFirestore.instance
                 .collection('chats')
@@ -639,11 +1351,9 @@ class _ChatPageState extends State<ChatPage> {
                 return const SizedBox.shrink();
               }
 
-              final currentUid =
-                  FirebaseAuth.instance.currentUser?.uid ?? '';
+              final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
 
-              final otherTyping =
-                  data['typing_${widget.userId}'] == true;
+              final otherTyping = data['typing_${widget.userId}'] == true;
 
               if (!otherTyping || currentUid == widget.userId) {
                 return const SizedBox.shrink();
@@ -668,7 +1378,6 @@ class _ChatPageState extends State<ChatPage> {
               );
             },
           ),
-
           if (sendingImage)
             const Padding(
               padding: EdgeInsets.only(bottom: 5),
@@ -688,7 +1397,6 @@ class _ChatPageState extends State<ChatPage> {
                 ],
               ),
             ),
-
           SafeArea(
             child: Container(
               padding: const EdgeInsets.fromLTRB(
@@ -710,15 +1418,12 @@ class _ChatPageState extends State<ChatPage> {
               child: Row(
                 children: [
                   IconButton(
-                    onPressed: sendingImage
-                        ? null
-                        : pickAndSendImage,
+                    onPressed: sendingImage ? null : pickAndSendImage,
                     icon: const Icon(
                       Icons.add_circle_outline,
                       color: Colors.pink,
                     ),
                   ),
-
                   IconButton(
                     onPressed: toggleEmojiPicker,
                     icon: const Icon(
@@ -726,7 +1431,13 @@ class _ChatPageState extends State<ChatPage> {
                       color: Colors.pink,
                     ),
                   ),
-
+                  IconButton(
+                    onPressed: _showGiftPicker,
+                    icon: const Icon(
+                      Icons.card_giftcard,
+                      color: Colors.pink,
+                    ),
+                  ),
                   Expanded(
                     child: TextField(
                       controller: messageController,
@@ -745,8 +1456,7 @@ class _ChatPageState extends State<ChatPage> {
                         hintText: 'Type a message...',
                         filled: true,
                         fillColor: const Color(0xFFFFF1F4),
-                        contentPadding:
-                            const EdgeInsets.symmetric(
+                        contentPadding: const EdgeInsets.symmetric(
                           horizontal: 18,
                           vertical: 13,
                         ),
@@ -757,9 +1467,7 @@ class _ChatPageState extends State<ChatPage> {
                       ),
                     ),
                   ),
-
                   const SizedBox(width: 6),
-
                   Container(
                     decoration: const BoxDecoration(
                       color: Colors.pink,
@@ -777,17 +1485,14 @@ class _ChatPageState extends State<ChatPage> {
               ),
             ),
           ),
-
           if (showEmojiPicker)
             SizedBox(
               height: 280,
               child: EmojiPicker(
                 onEmojiSelected: (category, emoji) {
-                  messageController.text =
-                      messageController.text + emoji.emoji;
+                  messageController.text = messageController.text + emoji.emoji;
 
-                  messageController.selection =
-                      TextSelection.fromPosition(
+                  messageController.selection = TextSelection.fromPosition(
                     TextPosition(
                       offset: messageController.text.length,
                     ),

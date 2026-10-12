@@ -1,0 +1,156 @@
+const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { initializeApp } = require("firebase-admin/app");
+const { getFirestore } = require("firebase-admin/firestore");
+const { getMessaging } = require("firebase-admin/messaging");
+
+initializeApp();
+
+const db = getFirestore();
+
+exports.sendNewMessageNotification = onDocumentCreated(
+  "chats/{chatId}/messages/{messageId}",
+  async (event) => {
+    const message = event.data?.data();
+
+    if (!message) {
+      return;
+    }
+
+    const receiverId = message.receiverId;
+    const senderId = message.senderId;
+
+    if (!receiverId || !senderId) {
+      return;
+    }
+
+    const receiverDoc = await db
+      .collection("users")
+      .doc(receiverId)
+      .get();
+
+    const receiver = receiverDoc.data();
+
+    if (!receiver) {
+      return;
+    }
+
+    const token = receiver.fcmToken;
+
+    if (!token) {
+      console.log("No FCM token for receiver:", receiverId);
+      return;
+    }
+
+    const senderDoc = await db
+      .collection("users")
+      .doc(senderId)
+      .get();
+
+    const sender = senderDoc.data();
+
+    const senderName = sender?.name || "Someone";
+
+    const messageText = message.type === "image"
+      ? "📷 Sent you a photo"
+      : (message.text || "Sent you a message");
+
+    try {
+      await getMessaging().send({
+        token: token,
+        notification: {
+          title: senderName,
+          body: messageText,
+        },
+        data: {
+          chatId: event.params.chatId,
+          senderId: senderId,
+          type: message.type || "text",
+        },
+      });
+
+      console.log("Notification sent to:", receiverId);
+    } catch (error) {
+      console.error("Notification failed:", error);
+    }
+  }
+);
+
+exports.createDemoProfiles = require("firebase-functions/v2/https").onRequest(
+  async (req, res) => {
+    const profiles = [
+      {
+        id: "demo_aisha_01",
+        name: "Aisha",
+        age: 24,
+        gender: "Female",
+        bio: "Love coffee, music and weekend trips ☕🎵✈️",
+        interests: ["Music", "Travel", "Coffee"],
+        isDemo: true,
+        plan: "free",
+      },
+      {
+        id: "demo_priya_02",
+        name: "Priya",
+        age: 26,
+        gender: "Female",
+        bio: "Foodie who enjoys movies and exploring new places 🍿❤️",
+        interests: ["Movies", "Food", "Travel"],
+        isDemo: true,
+        plan: "free",
+      },
+      {
+        id: "demo_ananya_03",
+        name: "Ananya",
+        age: 23,
+        gender: "Female",
+        bio: "Dancing, photography and good conversations 💃📸",
+        interests: ["Dancing", "Photography", "Music"],
+        isDemo: true,
+        plan: "free",
+      },
+      {
+        id: "demo_rohan_04",
+        name: "Rohini",
+        age: 27,
+        gender: "Female",
+        bio: "Fitness, travel and adventure 🏋️🌄",
+        interests: ["Fitness", "Travel", "Adventure"],
+        isDemo: true,
+        plan: "free",
+      },
+      {
+        id: "demo_arjun_05",
+        name: "Aravinda",
+        age: 25,
+        gender: "Female",
+        bio: "Movies, cricket and weekend road trips 🏏🎬🚗",
+        interests: ["Cricket", "Movies", "Travel"],
+        isDemo: true,
+        plan: "free",
+      },
+    ];
+
+    const batch = db.batch();
+
+    for (const profile of profiles) {
+      const ref = db.collection("users").doc(profile.id);
+
+      batch.set(
+        ref,
+        {
+          ...profile,
+          createdAt: require("firebase-admin/firestore")
+            .FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: `Created ${profiles.length} demo profiles`,
+    });
+  }
+);

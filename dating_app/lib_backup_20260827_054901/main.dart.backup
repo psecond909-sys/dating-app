@@ -1,0 +1,617 @@
+import 'package:flutter/material.dart';
+
+void main() => runApp(const LoveMatchApp());
+
+class LoveMatchApp extends StatelessWidget {
+  const LoveMatchApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'LoveMatch',
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.pink),
+      ),
+      home: const WelcomePage(),
+    );
+  }
+}
+
+class WelcomePage extends StatelessWidget {
+  const WelcomePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Colors.pink, Colors.deepOrangeAccent],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Spacer(),
+                const CircleAvatar(
+                  radius: 65,
+                  backgroundColor: Colors.white,
+                  child: Icon(Icons.favorite, color: Colors.pink, size: 75),
+                ),
+                const SizedBox(height: 25),
+                const Text(
+                  'LoveMatch',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 42,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Find someone special and start a beautiful connection.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white, fontSize: 18),
+                ),
+                const Spacer(),
+                SizedBox(
+                  width: double.infinity,
+                  height: 56,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const LoginPage()),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.pink,
+                    ),
+                    child: const Text(
+                      'Get Started',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  '18+ • Respect others • Stay safe',
+                  style: TextStyle(color: Colors.white70),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class LoginPage extends StatelessWidget {
+  const LoginPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Login')),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.favorite, color: Colors.pink, size: 70),
+            const SizedBox(height: 20),
+            const Text(
+              'Welcome Back',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 30),
+            const TextField(
+              decoration: InputDecoration(
+                labelText: 'Email',
+                prefixIcon: Icon(Icons.email),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 15),
+            const TextField(
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: 'Password',
+                prefixIcon: Icon(Icons.lock),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 25),
+            SizedBox(
+              width: double.infinity,
+              height: 54,
+              child: ElevatedButton(
+                onPressed: () => Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(builder: (_) => const HomePage()),
+                ),
+                child: const Text('Login', style: TextStyle(fontSize: 18)),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const RegisterPage()),
+              ),
+              child: const Text('Create New Account'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class RegisterPage extends StatelessWidget {
+  const RegisterPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Create Account')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            const Icon(Icons.person_add, color: Colors.pink, size: 70),
+            const SizedBox(height: 20),
+            const Text(
+              'Join LoveMatch',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 25),
+            const TextField(
+              decoration: InputDecoration(
+                labelText: 'Full Name',
+                prefixIcon: Icon(Icons.person),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 15),
+            const TextField(
+              decoration: InputDecoration(
+                labelText: 'Email',
+                prefixIcon: Icon(Icons.email),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 15),
+            const TextField(
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: 'Password',
+                prefixIcon: Icon(Icons.lock),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 15),
+            const TextField(
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: 'Age',
+                prefixIcon: Icon(Icons.cake),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 25),
+            SizedBox(
+              width: double.infinity,
+              height: 54,
+              child: ElevatedButton(
+                onPressed: () => Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(builder: (_) => const HomePage()),
+                ),
+                child: const Text(
+                  'Create Account',
+                  style: TextStyle(fontSize: 18),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  int index = 0;
+
+  final pages = const [
+    DiscoverPage(),
+    MatchesPage(),
+    ChatsPage(),
+    ProfilePage(),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: pages[index],
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: index,
+        onDestinationSelected: (i) => setState(() => index = i),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.explore_outlined), selectedIcon: Icon(Icons.explore), label: 'Discover'),
+          NavigationDestination(icon: Icon(Icons.favorite_border), selectedIcon: Icon(Icons.favorite), label: 'Matches'),
+          NavigationDestination(icon: Icon(Icons.chat_bubble_outline), selectedIcon: Icon(Icons.chat_bubble), label: 'Chats'),
+          NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: 'Profile'),
+        ],
+      ),
+    );
+  }
+}
+
+class DiscoverPage extends StatefulWidget {
+  const DiscoverPage({super.key});
+
+  @override
+  State<DiscoverPage> createState() => _DiscoverPageState();
+}
+
+class _DiscoverPageState extends State<DiscoverPage> {
+  int person = 0;
+
+  final people = const [
+    ['Priya', '25', 'Hyderabad', 'Coffee • Travel • Music', '👩🏻'],
+    ['Ananya', '27', 'Bengaluru', 'Books • Food • Photography', '👩🏼'],
+    ['Sneha', '24', 'Chennai', 'Movies • Travel • Good vibes', '👩🏽'],
+  ];
+
+  void next() => setState(() => person = (person + 1) % people.length);
+
+  @override
+  Widget build(BuildContext context) {
+    final p = people[person];
+
+    return SafeArea(
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 15, 20, 5),
+            child: Row(
+              children: [
+                const Text(
+                  'Discover',
+                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
+                ),
+                const Spacer(),
+                IconButton(onPressed: () {}, icon: const Icon(Icons.tune)),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Card(
+                clipBehavior: Clip.antiAlias,
+                elevation: 7,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(28),
+                ),
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: Container(
+                        width: double.infinity,
+                        color: Colors.pink.shade100,
+                        child: Center(
+                          child: Text(
+                            p[4],
+                            style: const TextStyle(fontSize: 150),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${p[0]}, ${p[1]}',
+                            style: const TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              const Icon(Icons.location_on, color: Colors.pink),
+                              Text(p[2]),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          Text(p[3], style: const TextStyle(fontSize: 16)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 18),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                FloatingActionButton(
+                  heroTag: 'skip',
+                  onPressed: next,
+                  child: const Icon(Icons.close, color: Colors.red),
+                ),
+                FloatingActionButton.large(
+                  heroTag: 'like',
+                  backgroundColor: Colors.pink,
+                  onPressed: () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('❤️ Liked!')),
+                    );
+                    next();
+                  },
+                  child: const Icon(Icons.favorite, color: Colors.white),
+                ),
+                FloatingActionButton(
+                  heroTag: 'star',
+                  onPressed: () {},
+                  child: const Icon(Icons.star, color: Colors.blue),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class MatchesPage extends StatelessWidget {
+  const MatchesPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final matches = const [
+      ['Priya', '👩🏻', 'You matched today'],
+      ['Ananya', '👩🏼', 'You matched yesterday'],
+      ['Sneha', '👩🏽', 'You matched recently'],
+    ];
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Your Matches',
+              style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 20),
+            Expanded(
+              child: ListView.builder(
+                itemCount: matches.length,
+                itemBuilder: (_, i) => Card(
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      radius: 28,
+                      child: Text(
+                        matches[i][1],
+                        style: const TextStyle(fontSize: 28),
+                      ),
+                    ),
+                    title: Text(
+                      matches[i][0],
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(matches[i][2]),
+                    trailing: const Icon(Icons.favorite, color: Colors.pink),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ChatsPage extends StatelessWidget {
+  const ChatsPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final chats = const [
+      ['Priya', 'Hey! Nice to meet you ❤️', '2m', '👩🏻'],
+      ['Ananya', 'How was your day?', '10m', '👩🏼'],
+      ['Sneha', 'That sounds great!', '1h', '👩🏽'],
+    ];
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Messages',
+              style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 15),
+            Expanded(
+              child: ListView.builder(
+                itemCount: chats.length,
+                itemBuilder: (_, i) => ListTile(
+                  contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                  leading: CircleAvatar(
+                    radius: 28,
+                    child: Text(
+                      chats[i][3],
+                      style: const TextStyle(fontSize: 28),
+                    ),
+                  ),
+                  title: Text(
+                    chats[i][0],
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text(chats[i][1]),
+                  trailing: Text(chats[i][2]),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => ChatDetailPage(name: chats[i][0]),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ChatDetailPage extends StatefulWidget {
+  final String name;
+
+  const ChatDetailPage({super.key, required this.name});
+
+  @override
+  State<ChatDetailPage> createState() => _ChatDetailPageState();
+}
+
+class _ChatDetailPageState extends State<ChatDetailPage> {
+  final controller = TextEditingController();
+  final messages = <String>['Hi! 👋', 'Nice to meet you!', 'How are you?'];
+
+  void send() {
+    if (controller.text.trim().isEmpty) return;
+    setState(() {
+      messages.add(controller.text.trim());
+      controller.clear();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.name)),
+      body: Column(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.all(15),
+              itemCount: messages.length,
+              itemBuilder: (_, i) => Align(
+                alignment: Alignment.centerRight,
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 15,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.pink.shade100,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Text(messages[i]),
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: controller,
+                      decoration: const InputDecoration(
+                        hintText: 'Type a message...',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: send,
+                    icon: const Icon(Icons.send, color: Colors.pink),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ProfilePage extends StatelessWidget {
+  const ProfilePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          const SizedBox(height: 20),
+          const CircleAvatar(
+            radius: 65,
+            backgroundColor: Color(0xFFFFC3CF),
+            child: Text('👤', style: TextStyle(fontSize: 65)),
+          ),
+          const SizedBox(height: 15),
+          const Center(
+            child: Text(
+              'Your Profile',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(height: 25),
+          profileTile(Icons.person, 'Edit Profile'),
+          profileTile(Icons.photo_library, 'My Photos'),
+          profileTile(Icons.location_on, 'Location & Distance'),
+          profileTile(Icons.notifications, 'Notifications'),
+          profileTile(Icons.security, 'Privacy & Safety'),
+          profileTile(Icons.settings, 'Settings'),
+        ],
+      ),
+    );
+  }
+
+  Widget profileTile(IconData icon, String title) {
+    return Card(
+      child: ListTile(
+        leading: Icon(icon, color: Colors.pink),
+        title: Text(title),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () {},
+      ),
+    );
+  }
+}

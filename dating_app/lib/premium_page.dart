@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class PremiumPage extends StatefulWidget {
   const PremiumPage({super.key});
@@ -15,13 +17,44 @@ class _PremiumPageState extends State<PremiumPage> {
 
   StreamSubscription<List<PurchaseDetails>>? _subscription;
 
-  static const String monthlyId = 'premium_monthly';
-  static const String yearlyId = 'premium_yearly';
+  static const String silverMonthlyId = 'silver_monthly';
+  static const String silverYearlyId = 'silver_yearly';
+  static const String premiumMonthlyId = 'premium_monthly';
+  static const String premiumYearlyId = 'premium_yearly';
 
   List<ProductDetails> _products = [];
   bool _storeAvailable = false;
   bool _loading = true;
-  bool _isPremium = false;
+  String _plan = 'free';
+
+  Future<void> _loadSavedPlan() async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return;
+    }
+
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+
+      if (!mounted) {
+        return;
+      }
+
+      final savedPlan = doc.data()?['plan'];
+
+      if (savedPlan == 'silver' || savedPlan == 'premium') {
+        setState(() {
+          _plan = savedPlan;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading saved plan: $e');
+    }
+  }
 
   @override
   void initState() {
@@ -36,6 +69,7 @@ class _PremiumPageState extends State<PremiumPage> {
     );
 
     _loadProducts();
+    _loadSavedPlan();
   }
 
   Future<void> _loadProducts() async {
@@ -54,8 +88,10 @@ class _PremiumPageState extends State<PremiumPage> {
     }
 
     const ids = <String>{
-      monthlyId,
-      yearlyId,
+      silverMonthlyId,
+      silverYearlyId,
+      premiumMonthlyId,
+      premiumYearlyId,
     };
 
     final response = await _iap.queryProductDetails(ids);
@@ -113,6 +149,44 @@ class _PremiumPageState extends State<PremiumPage> {
     }
   }
 
+  Future<void> _restorePurchases() async {
+    if (!_storeAvailable) {
+      _showMessage('Google Play Store is not available.');
+      return;
+    }
+
+    try {
+      await _iap.restorePurchases();
+      _showMessage('Restore request sent. Checking your purchases...');
+    } catch (e) {
+      debugPrint('Restore purchases error: $e');
+      _showMessage('Unable to restore purchases. Please try again.');
+    }
+  }
+
+  Future<void> _savePlanToFirebase(String plan) async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      debugPrint('Cannot save plan: user is not signed in.');
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .set({
+        'plan': plan,
+        'planUpdatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      debugPrint('Saved plan to Firebase: $plan');
+    } catch (e) {
+      debugPrint('Error saving plan: $e');
+    }
+  }
+
   Future<void> _handlePurchaseUpdates(
     List<PurchaseDetails> purchases,
   ) async {
@@ -127,11 +201,28 @@ class _PremiumPageState extends State<PremiumPage> {
           return;
         }
 
-        setState(() {
-          _isPremium = true;
-        });
+        String? purchasedPlan;
 
-        _showMessage('🎉 Premium activated!');
+        if (purchase.productID == silverMonthlyId ||
+            purchase.productID == silverYearlyId) {
+          purchasedPlan = 'silver';
+        } else if (purchase.productID == premiumMonthlyId ||
+            purchase.productID == premiumYearlyId) {
+          purchasedPlan = 'premium';
+        }
+
+        if (purchasedPlan != null) {
+          setState(() {
+            _plan = purchasedPlan!;
+          });
+
+          await _savePlanToFirebase(purchasedPlan);
+
+          _showMessage(
+            '🎉 ${purchasedPlan[0].toUpperCase()}${purchasedPlan.substring(1)} plan activated!',
+          );
+        }
+
       }
 
       if (purchase.status == PurchaseStatus.error) {
@@ -198,22 +289,67 @@ class _PremiumPageState extends State<PremiumPage> {
             _feature('Advanced Filters'),
             _feature('Premium Chat Features'),
 
+            const SizedBox(height: 25),
+
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Payment & Subscription',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Subscriptions automatically renew at the end of each billing period unless cancelled before renewal.',
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'You can cancel your subscription at any time through Google Play subscription settings. Cancellation stops future renewals; your current subscription remains active until the end of the paid period.',
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Customer Care',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    SelectableText(
+                      'psecond909@gmail.com',
+                      style: TextStyle(
+                        color: Colors.pink,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
             const SizedBox(height: 30),
 
-            if (_isPremium)
+            if (_plan != 'free')
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(20),
                   child: Column(
-                    children: const [
-                      Icon(
+                    children: [
+                      const Icon(
                         Icons.verified,
                         size: 50,
                       ),
-                      SizedBox(height: 10),
+                      const SizedBox(height: 10),
                       Text(
-                        'You are Premium ⭐',
-                        style: TextStyle(
+                        _plan == 'silver'
+                            ? 'You are Silver 🥈'
+                            : 'You are Premium ⭐',
+                        style: const TextStyle(
                           fontSize: 22,
                           fontWeight: FontWeight.bold,
                         ),
@@ -223,6 +359,135 @@ class _PremiumPageState extends State<PremiumPage> {
                 ),
               ),
 
+            Card(
+              margin: const EdgeInsets.only(bottom: 20),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Choose Your Plan',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Upgrade when you reach your free limits.',
+                      style: TextStyle(color: Colors.black54),
+                    ),
+                    const SizedBox(height: 16),
+
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: DataTable(
+                        columnSpacing: 18,
+                        columns: const [
+                          DataColumn(label: Text('Feature')),
+                          DataColumn(label: Text('Free')),
+                          DataColumn(label: Text('Silver 🥈')),
+                          DataColumn(label: Text('Premium ⭐')),
+                        ],
+                        rows: const [
+                          DataRow(
+                            cells: [
+                              DataCell(Text('Likes / day')),
+                              DataCell(Text('Limited')),
+                              DataCell(Text('More')),
+                              DataCell(Text('Unlimited')),
+                            ],
+                          ),
+                          DataRow(
+                            cells: [
+                              DataCell(Text('Messages without match')),
+                              DataCell(Text('5 overall*')),
+                              DataCell(Text('5 overall*')),
+                              DataCell(Text('Unlimited')),
+                            ],
+                          ),
+                          DataRow(
+                            cells: [
+                              DataCell(Text('Messages after match')),
+                              DataCell(Text('Unlimited')),
+                              DataCell(Text('Unlimited')),
+                              DataCell(Text('Unlimited')),
+                            ],
+                          ),
+                          DataRow(
+                            cells: [
+                              DataCell(Text('Images')),
+                              DataCell(Text('2')),
+                              DataCell(Text('Unlimited')),
+                              DataCell(Text('Unlimited')),
+                            ],
+                          ),
+                          DataRow(
+                            cells: [
+                              DataCell(Text('Emoji')),
+                              DataCell(Text('Included')),
+                              DataCell(Text('Included')),
+                              DataCell(Text('Included')),
+                            ],
+                          ),
+                          DataRow(
+                            cells: [
+                              DataCell(Text('Ads')),
+                              DataCell(Text('Shown')),
+                              DataCell(Text('Shown')),
+                              DataCell(Text('Ad Free')),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 18),
+
+                    const Text(
+                      'Silver 🥈',
+                      style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    const Text(
+                      '5 unmatched messages per person overall • Unlimited images • '
+                      'Unlimited chat after a mutual match • Ads shown.',
+                    ),
+
+                    const SizedBox(height: 14),
+
+                    const Text(
+                      'Premium ⭐',
+                      style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    const Text(
+                      'Unlimited messages without a match • Unlimited messages after matching • '
+                      'Unlimited images • Emoji • Ad free.',
+                    ),
+
+                    const SizedBox(height: 14),
+
+                    const Text(
+                      'Subscriptions automatically renew unless cancelled. '
+                      'You can cancel anytime through Google Play subscription settings.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
             if (_loading)
               const Padding(
                 padding: EdgeInsets.all(20),
@@ -231,19 +496,43 @@ class _PremiumPageState extends State<PremiumPage> {
                 ),
               ),
 
-            if (!_loading && !_isPremium) ...[
+            if (!_loading && _plan == 'free') ...[
               _planCard(
-                title: 'Premium Monthly',
-                price: '₹199 / month',
-                productId: monthlyId,
+                title: 'Silver Monthly 🥈',
+                price: '₹99 / month',
+                productId: silverMonthlyId,
               ),
 
               const SizedBox(height: 15),
 
               _planCard(
-                title: 'Premium Yearly',
+                title: 'Silver Yearly 🥈',
+                price: '₹799 / year',
+                productId: silverYearlyId,
+              ),
+
+              const SizedBox(height: 25),
+
+              _planCard(
+                title: 'Premium Monthly ⭐',
+                price: '₹199 / month',
+                productId: premiumMonthlyId,
+              ),
+
+              const SizedBox(height: 15),
+
+              _planCard(
+                title: 'Premium Yearly ⭐',
                 price: '₹1,499 / year',
-                productId: yearlyId,
+                productId: premiumYearlyId,
+              ),
+
+              const SizedBox(height: 20),
+
+              OutlinedButton.icon(
+                onPressed: _restorePurchases,
+                icon: const Icon(Icons.restore),
+                label: const Text('Restore Purchases'),
               ),
             ],
           ],

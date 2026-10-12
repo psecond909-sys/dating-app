@@ -1,28 +1,129 @@
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'register_page.dart';
 import 'login_page.dart';
 import 'firebase_options.dart';
 
+// LOVIRA_FOREGROUND_NOTIFICATIONS_ADDED
+final FlutterLocalNotificationsPlugin _localNotifications =
+    FlutterLocalNotificationsPlugin();
+
+const AndroidNotificationChannel _messageChannel = AndroidNotificationChannel(
+  'lovira_messages',
+  'Lovira messages',
+  description: 'Notifications for new messages',
+  importance: Importance.high,
+);
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  await FirebaseMessaging.instance.requestPermission(
-    alert: true,
-    badge: true,
-    sound: true,
+  await MobileAds.instance.initialize();
+
+  // LOVIRA_FOREGROUND_NOTIFICATION_HANDLER
+  await _localNotifications.initialize(
+    settings: const InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    ),
   );
 
-  final fcmToken = await FirebaseMessaging.instance.getToken();
+  await _localNotifications
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(_messageChannel);
 
-  if (fcmToken != null) {
-    debugPrint('FCM TOKEN: $fcmToken');
+  FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
+    final notification = message.notification;
+    await _localNotifications.show(
+      id: message.hashCode,
+      title: notification?.title ?? 'New message',
+      body: notification?.body ?? 'You received a message',
+      notificationDetails: const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'lovira_messages',
+          'Lovira messages',
+          channelDescription: 'Notifications for new messages',
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+      ),
+    );
+  });
+
+  // LOVIRA_FCM_TOKEN_SAVE_ADDED
+  try {
+    await FirebaseMessaging.instance.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    Future<void> saveFcmToken(User user) async {
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token == null) return;
+
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'fcmToken': token,
+      }, SetOptions(merge: true));
+
+      debugPrint('FCM token saved.');
+    }
+
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser != null) {
+      await saveFcmToken(currentUser);
+    }
+
+    FirebaseAuth.instance.authStateChanges().listen((user) async {
+      if (user == null) return;
+      try {
+        await saveFcmToken(user);
+      } catch (e) {
+        debugPrint('FCM token save failed: $e');
+      }
+    });
+
+    FirebaseMessaging.instance.onTokenRefresh.listen((token) async {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      try {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+          'fcmToken': token,
+        }, SetOptions(merge: true));
+        debugPrint('FCM token refreshed.');
+      } catch (e) {
+        debugPrint('FCM token refresh save failed: $e');
+      }
+    });
+  } catch (e) {
+    debugPrint('FCM initialization skipped: $e');
   }
 
+  try {
+    await FirebaseMessaging.instance.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    final fcmToken = await FirebaseMessaging.instance.getToken();
+
+    if (fcmToken != null) {
+      debugPrint('FCM TOKEN: $fcmToken');
+    }
+  } catch (e) {
+    debugPrint('FCM initialization skipped: $e');
+  }
 
   runApp(const LoveMatchApp());
 }
@@ -34,7 +135,7 @@ class LoveMatchApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'LoveMatch',
+      title: 'Lovira',
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
@@ -153,7 +254,7 @@ class _WelcomePageState extends State<WelcomePage>
                   ),
                   const SizedBox(height: 30),
                   const Text(
-                    'LoveMatch',
+                    'Lovira',
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 42,

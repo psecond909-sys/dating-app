@@ -1,0 +1,315 @@
+const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { initializeApp } = require("firebase-admin/app");
+const { getFirestore } = require("firebase-admin/firestore");
+const { getMessaging } = require("firebase-admin/messaging");
+const crypto = require("crypto");
+const { onCall, HttpsError } = require("firebase-functions/v2/https");
+
+initializeApp();
+
+const db = getFirestore();
+
+exports.sendNewMessageNotification = onDocumentCreated(
+  "chats/{chatId}/messages/{messageId}",
+  async (event) => {
+    const message = event.data?.data();
+
+    if (!message) {
+      return;
+    }
+
+    const receiverId = message.receiverId;
+    const senderId = message.senderId;
+
+    if (!receiverId || !senderId) {
+      return;
+    }
+
+    const receiverDoc = await db
+      .collection("users")
+      .doc(receiverId)
+      .get();
+
+    const receiver = receiverDoc.data();
+
+    if (!receiver) {
+      return;
+    }
+
+    const token = receiver.fcmToken;
+
+    if (!token) {
+      console.log("No FCM token for receiver:", receiverId);
+      return;
+    }
+
+    const senderDoc = await db
+      .collection("users")
+      .doc(senderId)
+      .get();
+
+    const sender = senderDoc.data();
+
+    const senderName = sender?.name || "Someone";
+
+    const messageText = message.type === "image"
+      ? "📷 Sent you a photo"
+      : (message.text || "Sent you a message");
+
+    try {
+      await getMessaging().send({
+        token: token,
+        notification: {
+          title: senderName,
+          body: messageText,
+        },
+        data: {
+          chatId: event.params.chatId,
+          senderId: senderId,
+          type: message.type || "text",
+        },
+      });
+
+      console.log("Notification sent to:", receiverId);
+    } catch (error) {
+      console.error("Notification failed:", error);
+    }
+  }
+);
+
+/* ============================================================
+   LOVIRA COINS - GOOGLE PLAY PURCHASE VERIFICATION
+   Product: coins_20
+   Reward: 20 coins
+   Price: ₹100 (configured in Google Play Console)
+   ============================================================ */
+
+
+
+
+
+const LOVIRA_PACKAGE_NAME = "com.lovira.dating";
+const COINS_PRODUCT_ID = "coins_20";
+const COINS_REWARD = 20;
+
+let androidPublisherPromise = null;
+
+function getAndroidPublisher() {
+  if (!androidPublisherPromise) {
+    androidPublisherPromise = (async () => {
+      const { google } = require("googleapis");
+      const auth = new google.auth.GoogleAuth({
+        scopes: [
+          "https://www.googleapis.com/auth/androidpublisher",
+        ],
+      });
+
+      const client = await auth.getClient();
+
+      return google.androidpublisher({
+        version: "v3",
+        auth: client,
+      });
+    })();
+  }
+
+  return androidPublisherPromise;
+}
+
+exports.verifyCoinPurchase = onCall(
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "You must be signed in to buy coins."
+      );
+    }
+
+    const productId = request.data?.productId;
+    const purchaseToken = request.data?.purchaseToken;
+
+    if (productId !== COINS_PRODUCT_ID) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Invalid coin product."
+      );
+    }
+
+    if (
+      typeof purchaseToken !== "string" ||
+      purchaseToken.length < 10
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Invalid purchase token."
+      );
+    }
+
+    const tokenHash = crypto
+      .createHash("sha256")
+      .update(purchaseToken)
+      .digest("hex");
+
+    const purchaseRef = db
+      .collection("coinPurchases")
+      .doc(tokenHash);
+
+    try {
+      const androidPublisher = await getAndroidPublisher();
+
+      // Verify the purchase directly with Google Play.
+      const response =
+        await androidPublisher.purchases.products.get({
+          packageName: LOVIRA_PACKAGE_NAME,
+          productId: COINS_PRODUCT_ID,
+          token: purchaseToken,
+        });
+
+      const purchase = response.data;
+
+      console.log(
+        "Google Play purchase verification:",
+        JSON.stringify({
+          productId: COINS_PRODUCT_ID,
+          purchaseState: purchase.purchaseState,
+          consumptionState: purchase.consumptionState,
+          acknowledgementState:
+            purchase.acknowledgementState,
+          orderId: purchase.orderId || null,
+        })
+      );
+
+      // Google Play purchaseState:
+      // 0 = Purchased
+      // 1 = Canceled
+      // 2 = Pending
+      if (purchase.purchaseState !== 0) {
+        throw new HttpsError(
+          "failed-precondition",
+          "The Google Play purchase is not completed."
+        );
+      }
+
+      // Prevent the same purchase token from being used
+      // to receive coins more than once.
+      const existingPurchase = await purchaseRef.get();
+
+      if (existingPurchase.exists) {
+        const existingData = existingPurchase.data();
+
+        if (existingData.uid !== uid) {
+          throw new HttpsError(
+            "permission-denied",
+            "This purchase belongs to another account."
+          );
+        }
+
+        // Already granted. Make sure Google Play purchase
+        // is consumed so it can be purchased again.
+        if (purchase.consumptionState !== 1) {
+          await androidPublisher.purchases.products.consume({
+            packageName: LOVIRA_PACKAGE_NAME,
+            productId: COINS_PRODUCT_ID,
+            token: purchaseToken,
+          });
+        }
+
+        const walletSnapshot = await db
+          .collection("users")
+          .doc(uid)
+          .collection("wallet")
+          .doc("coins")
+          .get();
+
+        const currentCoins =
+          walletSnapshot.data()?.coins ?? 0;
+
+        return {
+          success: true,
+          alreadyProcessed: true,
+          coins: Number(currentCoins),
+        };
+      }
+
+      const walletRef = db
+        .collection("users")
+        .doc(uid)
+        .collection("wallet")
+        .doc("coins");
+
+      // Atomically record the purchase and add the coins.
+      await db.runTransaction(async (transaction) => {
+        const walletSnapshot =
+          await transaction.get(walletRef);
+
+        const currentCoins = Number(
+          walletSnapshot.data()?.coins ?? 0
+        );
+
+        transaction.set(
+          walletRef,
+          {
+            coins: currentCoins + COINS_REWARD,
+            updatedAt:
+              require("firebase-admin/firestore")
+                .FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        transaction.create(purchaseRef, {
+          uid: uid,
+          productId: COINS_PRODUCT_ID,
+          coins: COINS_REWARD,
+          orderId: purchase.orderId || null,
+          purchaseTimeMillis:
+            purchase.purchaseTimeMillis || null,
+          createdAt:
+            require("firebase-admin/firestore")
+              .FieldValue.serverTimestamp(),
+        });
+      });
+
+      // Consume the Google Play purchase so the user can buy
+      // another 20-coin pack later.
+      await androidPublisher.purchases.products.consume({
+        packageName: LOVIRA_PACKAGE_NAME,
+        productId: COINS_PRODUCT_ID,
+        token: purchaseToken,
+      });
+
+      const finalWallet = await walletRef.get();
+
+      const finalCoins = Number(
+        finalWallet.data()?.coins ?? 0
+      );
+
+      console.log(
+        `Granted ${COINS_REWARD} coins to ${uid}. ` +
+        `New balance: ${finalCoins}`
+      );
+
+      return {
+        success: true,
+        alreadyProcessed: false,
+        coins: finalCoins,
+      };
+    } catch (error) {
+      console.error(
+        "Coin purchase verification failed:",
+        error
+      );
+
+      if (error instanceof HttpsError) {
+        throw error;
+      }
+
+      throw new HttpsError(
+        "internal",
+        "Could not verify the Google Play purchase."
+      );
+    }
+  }
+);

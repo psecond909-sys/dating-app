@@ -136,11 +136,9 @@ class MatchesPage extends StatelessWidget {
                     if (difference.inMinutes < 1) {
                       statusText = 'Last seen just now';
                     } else if (difference.inMinutes < 60) {
-                      statusText =
-                          'Last seen ${difference.inMinutes} min ago';
+                      statusText = 'Last seen ${difference.inMinutes} min ago';
                     } else if (difference.inHours < 24) {
-                      statusText =
-                          'Last seen ${difference.inHours} hr ago';
+                      statusText = 'Last seen ${difference.inHours} hr ago';
                     } else {
                       statusText = 'Last seen ${difference.inDays} days ago';
                     }
@@ -171,9 +169,7 @@ class MatchesPage extends StatelessWidget {
                             height: 9,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
-                              color: isOnline
-                                  ? Colors.green
-                                  : Colors.grey,
+                              color: isOnline ? Colors.green : Colors.grey,
                             ),
                           ),
                           const SizedBox(width: 6),

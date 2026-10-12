@@ -58,6 +58,15 @@ service cloud.firestore {
           );
       }
 
+      match /blockedUsers/{blockedUserId} {
+        allow read: if isUser(userId);
+        allow create: if isUser(userId)
+          && blockedUserId != userId
+          && request.resource.data.blockedUserId == blockedUserId;
+        allow update: if false;
+        allow delete: if isUser(userId);
+      }
+
       match /dailyMessageCounts/{counterId} {
         allow read, write: if isUser(userId);
       }
@@ -92,5 +101,25 @@ service cloud.firestore {
           && resource.data.senderId == request.auth.uid;
       }
     }
+
+    match /reports/{reportId} {
+      allow create: if signedIn()
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.reportedUserId is string
+        && request.resource.data.reportedUserId != request.auth.uid
+        && request.resource.data.reportedUserName is string
+        && request.resource.data.reason in [
+          'Fake profile',
+          'Harassment or abusive behavior',
+          'Inappropriate photo',
+          'Spam or scam',
+          'Other'
+        ]
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time;
+
+      allow read, update, delete: if false;
+    }
+
   }
 }
